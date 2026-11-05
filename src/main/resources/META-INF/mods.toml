@@ -1,0 +1,27 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="GPL-3.0-or-later"
+[[mods]]
+modId="webuilder"
+version="0.1.0"
+displayName="创世神：交互建造"
+authors="Local project"
+description='''通过轮盘、真实放置选点和预览使用 WorldEdit。'''
+[[dependencies.webuilder]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.18,)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.webuilder]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.webuilder]]
+modId="worldedit"
+mandatory=true
+versionRange="[7.2.15,7.3)"
+ordering="AFTER"
+side="BOTH"

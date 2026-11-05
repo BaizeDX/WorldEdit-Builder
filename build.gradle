@@ -1,0 +1,47 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+version = '0.1.0'
+group = 'local.webuilder'
+base { archivesName = 'worldedit-builder-1.20.1' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath
+    }
+}
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    runs {
+        server {
+            workingDirectory project.file('run')
+            args '--nogui'
+            mods { webuilder { source sourceSets.main } }
+        }
+        gameTestServer {
+            workingDirectory project.file('run-gametest')
+            jvmArgs '-Xmx1024m', '-Xms64m', '-XX:+UseSerialGC', '-XX:ActiveProcessorCount=2'
+            property 'forge.enabledGameTestNamespaces', 'webuilder'
+            mods {
+                webuilder {
+                    source sourceSets.main
+                    source sourceSets.gametest
+                }
+            }
+        }
+    }
+}
+repositories { flatDir { dirs 'libs' } }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.18'
+    implementation fg.deobf('local:worldedit-mod:7.2.15')
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+test { useJUnitPlatform(); maxHeapSize = '256m' }
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+jar.finalizedBy('reobfJar')
+jar { from('LICENSE.txt') }

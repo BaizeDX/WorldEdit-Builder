@@ -1,0 +1,8 @@
+.gradle/
+.gradle-home/
+build/
+run/
+run-gametest/
+libs/*.jar
+*.log
+mdk.zip
