@@ -26,15 +26,27 @@ public final class ClientController {
     static final KeyMapping MENU = new KeyMapping("key.webuilder.menu", InputConstants.Type.KEYSYM,
         GLFW.GLFW_KEY_GRAVE_ACCENT, "key.categories.webuilder");
     static CompoundTag status = new CompoundTag();
+    static final PreviewMesh mesh = new PreviewMesh();
     static int clickCooldown;
     static boolean waitingForRelease;
-    public static void receive(CompoundTag data) { status = data == null ? new CompoundTag() : data; }
+    public static void receive(CompoundTag data) {
+        CompoundTag next = data == null ? new CompoundTag() : data;
+        if (!status.getString("phase").equals(next.getString("phase")) ||
+                status.getInt("mode") != next.getInt("mode")) waitingForRelease = true;
+        if (!status.equals(next)) mesh.clear();
+        status = next;
+        if (Minecraft.getInstance().screen instanceof ModeScreen menu) menu.syncOptions();
+    }
     static Mode mode() {
         int n = status.getInt("mode");
         return n >= 0 && n < Mode.values().length ? Mode.values()[n] : Mode.NONE;
     }
     @Mod.EventBusSubscriber(modid = BuilderMod.ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.MOD)
     public static final class Registration {
+        @SubscribeEvent public static void reload(RegisterClientReloadListenersEvent event) {
+            event.registerReloadListener((net.minecraft.server.packs.resources.ResourceManagerReloadListener)
+                manager -> Minecraft.getInstance().execute(mesh::clear));
+        }
         @SubscribeEvent public static void keys(RegisterKeyMappingsEvent e) { e.register(MENU); }
     }
     @SubscribeEvent public static void tick(TickEvent.ClientTickEvent e) {
@@ -63,7 +75,8 @@ public final class ClientController {
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void interact(InputEvent.InteractionKeyMappingTriggered e) {
         Minecraft mc = Minecraft.getInstance();
-        if (mode() == Mode.NONE || mc.player == null || mc.screen != null || (!e.isAttack() && !e.isUseItem())) return;
+        if (mc.player == null || mc.screen != null || (!e.isAttack() && !e.isUseItem())) return;
+        if (!waitingForRelease && (mode() == Mode.NONE || status.getString("phase").isEmpty())) return;
         e.setCanceled(true);
         e.setSwingHand(false);
         if (clickCooldown > 0 || waitingForRelease) return;
@@ -74,7 +87,7 @@ public final class ClientController {
         } else {
             String phase = status.getString("phase");
             if (phase.equals("READY")) Network.action(1, 0);
-            else if (phase.isEmpty()) Network.action(4, 0);
+
         }
     }
     @SubscribeEvent public static void hud(RenderGuiEvent.Post e) {
@@ -95,6 +108,7 @@ public final class ClientController {
         PoseStack pose = e.getPoseStack();
         var camera = e.getCamera().getPosition();
         var buffers = mc.renderBuffers().bufferSource();
+        mesh.draw(status, pose, camera);
         pose.pushPose();
         pose.translate(-camera.x, -camera.y, -camera.z);
         LevelRenderer.renderLineBox(pose, buffers.getBuffer(RenderType.lines()),
@@ -107,23 +121,24 @@ public final class ClientController {
             if (state.isAir()) {
                 LevelRenderer.renderLineBox(pose, buffers.getBuffer(RenderType.lines()), new AABB(pos).inflate(0.002), 1, 0.15f, 0.15f, 0.9f);
             } else {
-                if (state.getRenderShape() == net.minecraft.world.level.block.RenderShape.MODEL) {
-                    pose.pushPose();
-                    pose.translate(pos.getX() + 0.05, pos.getY() + 0.05, pos.getZ() + 0.05);
-                    pose.scale(0.9f, 0.9f, 0.9f);
-                    mc.getBlockRenderer().renderSingleBlock(state, pose, buffers, 15728880,
-                        OverlayTexture.NO_OVERLAY, ModelData.EMPTY, RenderType.translucent());
-                    pose.popPose();
-                }
                 LevelRenderer.renderLineBox(pose, buffers.getBuffer(RenderType.lines()), new AABB(pos).inflate(0.003), 0.2f, 1, 0.6f, 0.8f);
             }
         }
+        for (long location : status.getLongArray("highlights")) {
+            LevelRenderer.renderLineBox(pose, buffers.getBuffer(RenderType.lines()), new AABB(BlockPos.of(location)).inflate(0.03), 1, 0.22f, 0.8f, 1);
+        }
         pose.popPose();
-        buffers.endBatch(RenderType.translucent());
+
         buffers.endBatch(RenderType.lines());
+    }
+    @SubscribeEvent public static void unload(net.minecraftforge.event.level.LevelEvent.Unload event) {
+        if (event.getLevel().isClientSide()) {
+            Minecraft.getInstance().execute(() -> { mesh.clear(); status = new CompoundTag(); });
+        }
     }
     @SubscribeEvent public static void logout(ClientPlayerNetworkEvent.LoggingOut e) {
         try { EffortlessBridge.update(false); } catch (IllegalStateException ignored) { }
+        mesh.clear();
         status = new CompoundTag(); clickCooldown = 0; waitingForRelease = false;
     }
 }

@@ -50,6 +50,147 @@ public final class BuilderGameTests {
         if (!job.finished) throw new AssertionError("Edit did not finish");
     }
     @GameTest(template = "empty", timeoutTicks = 200)
+    public static void geometryAirOnlyProtectsWaterAndBlocks(GameTestHelper h) throws Exception {
+        var p = player(h, "air-only");
+        var level = h.getLevel();
+        var start = h.absolutePos(new BlockPos(1, 2, 1));
+        var material = Blocks.STONE.defaultBlockState();
+        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME}) {
+            level.setBlock(start, Blocks.GOLD_BLOCK.defaultBlockState(), 2);
+            level.setBlock(start.east(), Blocks.WATER.defaultBlockState(), 2);
+            level.setBlock(start.east(2), Blocks.AIR.defaultBlockState(), 2);
+            var owner = new ServerController.State(); owner.mode = mode; owner.geometryAirOnly = true;
+            var job = new EditJob(p, owner, start, start.east(2), material); owner.job = job;
+            ready(job);
+            h.assertTrue(job.planned == 1 && job.preview.size() == 1, "Preview must contain only the empty cell");
+            execute(job);
+            h.assertTrue(level.getBlockState(start.east(2)).equals(material) && level.getBlockState(start.east()).is(Blocks.WATER)
+                && level.getBlockState(start).is(Blocks.GOLD_BLOCK), "Air-only geometry overwrote terrain");
+            ServerController.session(p).undo(null, ForgeAdapter.adaptPlayer(p));
+            h.assertTrue(level.getBlockState(start.east(2)).isAir(), "Air-only undo failed");
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void sameStateContainerIsNeverWritten(GameTestHelper h) throws Exception {
+        var p = player(h, "same-chest");
+        var level = h.getLevel();
+        var pos = h.absolutePos(new BlockPos(2, 2, 2));
+        var material = Blocks.CHEST.defaultBlockState();
+        level.setBlock(pos, material, 2);
+        var chest = (ChestBlockEntity) level.getBlockEntity(pos);
+        chest.setItem(4, new ItemStack(Items.DIAMOND, 8));
+        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME, Mode.REPLACE}) {
+            var owner = new ServerController.State(); owner.mode = mode; owner.source = material;
+            var job = new EditJob(p, owner, pos, pos, material); owner.job = job;
+            ready(job);
+            h.assertTrue(job.planned == 0 && job.preview.isEmpty(), "Matching container scheduled for writing");
+            execute(job);
+            h.assertTrue(level.getBlockEntity(pos) == chest && chest.getItem(4).getCount() == 8, "Container was rewritten");
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void realPlacementClearAndExit(GameTestHelper h) throws Exception {
+        var p = player(h, "placement");
+        var level = h.getLevel();
+        var a = h.absolutePos(new BlockPos(1, 2, 1));
+        var owner = ServerController.state(p);
+        try {
+            ServerController.action(p, 0, Mode.CLEAR.ordinal());
+            p.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, new ItemStack(Blocks.STONE, 8));
+            for (int i = 0; i <= 2; i += 2) {
+                var support = a.east(i).below();
+                level.setBlock(support, Blocks.GOLD_BLOCK.defaultBlockState(), 3);
+                var hit = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(support),
+                    Direction.UP, support, false);
+                p.gameMode.useItemOn(p, level, p.getMainHandItem(), net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+                ServerController.tickPlayer(p, owner);
+                if (i == 0) h.assertTrue(a.equals(owner.first), "Actual server placement did not select the first point");
+            }
+            var job = owner.job;
+            h.assertTrue(job != null, "Second placement did not start a preview");
+            ready(job); execute(job); ServerController.tickPlayer(p, owner);
+            h.assertTrue(owner.mode == Mode.NONE && level.getBlockState(a).isAir() && level.getBlockState(a.east(2)).isAir(),
+                "Clear must remove both markers and exit");
+            ServerController.session(p).undo(null, ForgeAdapter.adaptPlayer(p));
+            h.assertTrue(level.getBlockState(a).is(Blocks.STONE) && level.getBlockState(a.east(2)).is(Blocks.STONE), "Marker undo failed");
+        } finally { ServerController.STATES.remove(p.getUUID()); }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void doorPlacementAndInteraction(GameTestHelper h) throws Exception {
+        var p = player(h, "door-placement");
+        var level = h.getLevel();
+        var pos = h.absolutePos(new BlockPos(2, 2, 2));
+        var hand = net.minecraft.world.InteractionHand.MAIN_HAND;
+        var owner = ServerController.state(p);
+        try {
+            ServerController.action(p, 0, Mode.COPY.ordinal());
+            level.setBlock(pos.below(), Blocks.STONE.defaultBlockState(), 3);
+            p.setItemInHand(hand, new ItemStack(Items.OAK_DOOR));
+            var support = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos.below()), Direction.UP, pos.below(), false);
+            p.gameMode.useItemOn(p, level, p.getMainHandItem(), hand, support);
+            ServerController.tickPlayer(p, owner);
+            h.assertTrue(pos.equals(owner.first) && owner.job == null && level.getBlockState(pos.above()).is(Blocks.OAK_DOOR), "Door must select exactly one point");
+            p.setItemInHand(hand, new ItemStack(Blocks.STONE));
+            var door = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos), Direction.NORTH, pos, false);
+            p.gameMode.useItemOn(p, level, p.getMainHandItem(), hand, door);
+            ServerController.tickPlayer(p, owner);
+            h.assertTrue(level.getBlockState(pos).getValue(net.minecraft.world.level.block.DoorBlock.OPEN) && owner.job == null, "Opening a door should not select a point");
+        } finally { ServerController.STATES.remove(p.getUUID()); }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void clearRefreshesInventorySnapshot(GameTestHelper h) throws Exception {
+        var p = player(h, "inventory");
+        var pos = h.absolutePos(new BlockPos(2, 2, 2));
+        var level = h.getLevel();
+        level.setBlock(pos, Blocks.CHEST.defaultBlockState(), 3);
+        var owner = new ServerController.State(); owner.mode = Mode.CLEAR; owner.continuous = true;
+        var job = new EditJob(p, owner, pos, pos, Blocks.STONE.defaultBlockState()); owner.job = job;
+        ready(job);
+        ((ChestBlockEntity) level.getBlockEntity(pos)).setItem(3, new ItemStack(Items.EMERALD, 11));
+        execute(job); ServerController.tickPlayer(p, owner);
+        h.assertTrue(owner.mode == Mode.CLEAR && owner.job == null, "Continuous mode lost");
+        ServerController.session(p).undo(null, ForgeAdapter.adaptPlayer(p));
+        h.assertTrue(((ChestBlockEntity) level.getBlockEntity(pos)).getItem(3).getCount() == 11, "Stale inventory after undo");
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void replaceReportsChangedMatch(GameTestHelper h) throws Exception {
+        var p = player(h, "match");
+        var pos = h.absolutePos(new BlockPos(2, 2, 2));
+        var level = h.getLevel();
+        level.setBlock(pos, Blocks.STONE.defaultBlockState(), 3);
+        var owner = new ServerController.State(); owner.mode = Mode.REPLACE; owner.source = Blocks.STONE.defaultBlockState();
+        var job = new EditJob(p, owner, pos, pos.east(), Blocks.GOLD_BLOCK.defaultBlockState()); owner.job = job;
+        ready(job); level.setBlock(pos, Blocks.DIRT.defaultBlockState(), 3);
+        job.confirm(); ready(job);
+        h.assertTrue(job.highlights.contains(pos) && job.planned == 0 && level.getBlockState(pos).is(Blocks.DIRT), "Changed match not identified");
+        execute(job); h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void truncatedChestCopiesLatestContents(GameTestHelper h) throws Exception {
+        var p = player(h, "partial");
+        var pos = h.absolutePos(new BlockPos(2, 2, 2));
+        var level = h.getLevel();
+        var left = Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH)
+            .setValue(ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT);
+        level.setBlock(pos, left, 2);
+        level.setBlock(pos.east(), left.setValue(ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT), 2);
+        var owner = new ServerController.State(); owner.mode = Mode.COPY;
+        var job = new EditJob(p, owner, pos, pos, left); owner.job = job;
+        ready(job);
+        ((ChestBlockEntity) level.getBlockEntity(pos)).setItem(0, new ItemStack(Items.DIAMOND, 6));
+        execute(job);
+        var clip = ServerController.session(p).getClipboard().getClipboard();
+        var cell = EditJob.Snapshot.fromWorldEdit(clip.getFullBlock(ForgeAdapter.adapt(pos)));
+        h.assertTrue(clip.getRegion().getVolume() == 1 && cell.nbt().getList("Items", 10).getCompound(0).getByte("Count") == 6,
+            "Partial chest or confirmed contents incorrect");
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
     public static void chestHistoryRoundTrip(GameTestHelper h) throws Exception {
         var level = h.getLevel();
         var p = player(h, "history-test");
@@ -126,6 +267,8 @@ public final class BuilderGameTests {
         var copy = new EditJob(p, owner, a, a.offset(1, 0, 0), Blocks.STONE.defaultBlockState()); owner.job = copy;
         ready(copy); execute(copy);
         BlockPos target = a.offset(0, 0, 3);
+        h.getLevel().setBlock(target, h.getLevel().getBlockState(a), 2);
+        ((ChestBlockEntity) h.getLevel().getBlockEntity(target)).setItem(3, new ItemStack(Items.DIRT, 1));
         h.getLevel().setBlock(target.offset(1, 0, 0), Blocks.GOLD_BLOCK.defaultBlockState(), 3);
         owner.mode = Mode.PASTE;
         var paste = EditJob.paste(p, owner, target); owner.job = paste;

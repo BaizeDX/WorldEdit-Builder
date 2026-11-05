@@ -1,7 +1,7 @@
 plugins {
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
 }
-version = '0.1.0'
+version = '0.1.2'
 group = 'local.webuilder'
 base { archivesName = 'worldedit-builder-1.20.1' }
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
@@ -21,7 +21,7 @@ minecraft {
         }
         gameTestServer {
             workingDirectory project.file('run-gametest')
-            jvmArgs '-Xmx1024m', '-Xms64m', '-XX:+UseSerialGC', '-XX:ActiveProcessorCount=2'
+            jvmArgs '-Xmx1536m', '-Xms64m', '-XX:+UseSerialGC', '-XX:ActiveProcessorCount=2'
             property 'forge.enabledGameTestNamespaces', 'webuilder'
             mods {
                 webuilder {

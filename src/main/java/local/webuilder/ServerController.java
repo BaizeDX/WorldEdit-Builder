@@ -38,7 +38,9 @@ public final class ServerController {
         BlockState source;
         boolean includeAir;
         EditJob job;
-        int cooldown;
+        boolean continuous;
+        boolean geometryAirOnly;
+        final ArrayDeque<net.minecraftforge.event.level.BlockEvent.EntityPlaceEvent> placements = new ArrayDeque<>();
         String dimension = "";
     }
     static State state(ServerPlayer p) { return STATES.computeIfAbsent(p.getUUID(), id -> new State()); }
@@ -51,7 +53,7 @@ public final class ServerController {
     }
     static boolean allowedMode(ServerPlayer p, Mode mode) {
         String permission = switch (mode) {
-            case SOLID, HOLLOW, FRAME -> "worldedit.region.set";
+            case SOLID, HOLLOW, FRAME, CLEAR -> "worldedit.region.set";
             case REPLACE -> "worldedit.region.replace";
             case COPY -> "worldedit.clipboard.copy";
             case CUT -> "worldedit.clipboard.cut";
@@ -64,7 +66,9 @@ public final class ServerController {
     static void status(ServerPlayer p, State s) {
         CompoundTag data = new CompoundTag();
         data.putInt("mode", s.mode.ordinal());
+        data.putBoolean("geometryAirOnly", s.geometryAirOnly);
         data.putBoolean("air", s.includeAir);
+        data.putBoolean("continuous", s.continuous);
         data.putString("stage", s.first == null ? "放置第一点" : "放置第二点");
         if (s.mode == Mode.PASTE) data.putString("stage", "放置粘贴定位方块");
         if (s.job != null) s.job.describe(data);
@@ -73,6 +77,7 @@ public final class ServerController {
     static void reset(ServerPlayer p, State s, boolean report) {
         if (s.job != null) s.job.stop(report);
         s.job = null;
+        s.placements.clear();
         s.first = null;
         s.source = null;
         status(p, s);
@@ -95,16 +100,20 @@ public final class ServerController {
                     s.mode = Mode.values()[value];
                     s.dimension = p.level().dimension().location().toString();
                     status(p, s);
-                    message(p, "模式：" + s.mode.label);
                 }
                 case 1 -> { if (s.job != null) s.job.confirm(); }
-                case 2 -> { reset(p, s, true); message(p, "已取消并清空选点；已放置的定位方块保留。"); }
+                case 2 -> { reset(p, s, true); }
                 case 3 -> {
                     if (s.job != null) { message(p, "先取消当前预览，再修改空气选项。"); return; }
                     s.includeAir = value == 1;
                     status(p, s);
                 }
-                case 4 -> place(p, s);
+                case 7 -> {
+                    if (s.job != null) { message(p, "先取消预览，再调整几何体选项。"); return; }
+                    s.geometryAirOnly = value == 1;
+                    status(p, s);
+                }
+                case 6 -> { s.continuous = value == 1; status(p, s); }
                 case 5 -> { if (s.job != null) s.job.approveWarning(); }
                 default -> { }
             }
@@ -113,39 +122,41 @@ public final class ServerController {
             reset(p, s, true);
         }
     }
-    static void place(ServerPlayer p, State s) throws Exception {
-        if (s.mode == Mode.NONE || s.job != null || s.cooldown > 0) return;
-        s.cooldown = 5;
-        ItemStack stack = p.getMainHandItem();
-        if (!(stack.getItem() instanceof BlockItem)) { message(p, "请在主手持有可放置的方块。"); return; }
-        double reach = Math.min(16, p.getAttributeValue(net.minecraftforge.common.ForgeMod.BLOCK_REACH.get()));
-        Vec3 eye = p.getEyePosition();
-        BlockHitResult hit = p.level().clip(new ClipContext(eye, eye.add(p.getLookAngle().scale(reach)),
-            ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, p));
-        if (hit.getType() != HitResult.Type.BLOCK) { message(p, "未指向可放置表面；高空可先使用 /grass。"); return; }
-        UseOnContext context = new UseOnContext(p, InteractionHand.MAIN_HAND, hit);
-        BlockPos pos = new BlockPlaceContext(context).getClickedPos().immutable();
-        if (!p.level().mayInteract(p, pos) || !p.serverLevel().getWorldBorder().isWithinBounds(pos)) {
-            message(p, "该位置不允许放置。"); return;
-        }
-        BlockState before = p.level().getBlockState(pos);
-        int count = stack.getCount();
-        InteractionResult result = stack.useOn(context);
-        stack.setCount(count);
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onPlacement(net.minecraftforge.event.level.BlockEvent.EntityPlaceEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        State state = STATES.get(player.getUUID());
+        if (state == null || state.mode == Mode.NONE || state.job != null) return;
+        // Forge emits one EntityMultiPlaceEvent (a subclass) for a door or bed.
+        // Defer until placement has committed and every listener has had a chance to cancel.
+        if (state.placements.size() < 2) state.placements.add(event);
+    }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void guardInteraction(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickBlock event) {
+        if (event.getEntity() instanceof ServerPlayer player && hasJob(player)) event.setCanceled(true);
+    }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void guardBreak(net.minecraftforge.event.level.BlockEvent.BreakEvent event) {
+        if (event.getPlayer() instanceof ServerPlayer player && hasJob(player)) event.setCanceled(true);
+    }
+    private static boolean hasJob(ServerPlayer player) {
+        State state = STATES.get(player.getUUID());
+        return state != null && state.job != null;
+    }
+    static void recordPlacement(ServerPlayer p, State s, BlockPos pos) throws Exception {
         BlockState after = p.level().getBlockState(pos);
-        if (!result.consumesAction() || after.equals(before)) { message(p, "放置失败，选点未改变。"); return; }
-        p.swing(InteractionHand.MAIN_HAND, true);
+        if (after.isAir()) return;
         if (s.mode == Mode.PASTE) {
             s.job = EditJob.paste(p, s, pos);
-            message(p, "粘贴定位方块放置成功，正在检查范围。");
         } else if (s.first == null) {
             s.first = pos;
             s.source = after;
-            message(p, "第一点放置成功 " + pos.toShortString() + "，请放置第二点。");
         } else {
+            if (!p.level().hasChunkAt(s.first)) throw new IllegalArgumentException("第一点所在区块已卸载，请重新选点。");
             s.source = p.level().getBlockState(s.first);
+            if (s.mode == Mode.REPLACE && s.source.isAir())
+                throw new IllegalArgumentException("第一点已变为空气，请重新放置第一点。");
             s.job = new EditJob(p, s, s.first, pos, after);
-            message(p, "第二点放置成功 " + pos.toShortString() + "，正在检查范围。");
         }
         status(p, s);
     }
@@ -199,21 +210,31 @@ public final class ServerController {
         if (e.phase != TickEvent.Phase.END) return;
         for (var entry : new ArrayList<>(STATES.entrySet())) {
             State s = entry.getValue();
-            if (s.cooldown > 0) s.cooldown--;
+
             ServerPlayer p = e.getServer().getPlayerList().getPlayer(entry.getKey());
             if (p == null) continue;
             if (s.mode == Mode.NONE && s.job == null) continue;
             if (!allowed(p) || !allowedMode(p, s.mode) || !s.dimension.isEmpty() && !s.dimension.equals(p.level().dimension().location().toString())) {
                 reset(p, s, true); s.mode = Mode.NONE; s.dimension = ""; status(p, s); continue;
             }
-            if (s.job != null) {
-                try {
-                    s.job.tick();
-                    if (s.job.finished) { s.job = null; s.first = null; s.source = null; status(p, s); }
-                } catch (Exception ex) {
-                    message(p, "任务失败：" + ex.getMessage());
-                    reset(p, s, true);
-                }
+            tickPlayer(p, s);
+        }
+    }
+    static void tickPlayer(ServerPlayer p, State s) {
+        try {
+            while (!s.placements.isEmpty()) {
+                var placed = s.placements.removeFirst();
+                if (s.job == null && !placed.isCanceled() && placed.getLevel() == p.level())
+                    recordPlacement(p, s, placed.getPos());
+            }
+        } catch (Exception ex) { message(p, "选点失败：" + ex.getMessage()); reset(p, s, false); }
+        if (s.job != null) {
+            try {
+                s.job.tick();
+                if (s.job.finished) { if (!s.continuous) s.mode = Mode.NONE; s.job = null; s.first = null; s.source = null; status(p, s); }
+            } catch (Exception ex) {
+                message(p, "任务失败：" + ex.getMessage());
+                reset(p, s, true);
             }
         }
     }

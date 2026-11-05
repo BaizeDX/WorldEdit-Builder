@@ -28,7 +28,7 @@ import java.nio.file.Path;
 
 /** Bounded server-thread preparation and execution. WorldEdit owns the final shared history. */
 final class EditJob {
-    enum Phase { WARNING, PREPARE, READY, VALIDATE, NEIGHBORS, APPLY, HISTORY, DONE }
+    enum Phase { WARNING, PREPARE, READY, VALIDATE, APPLY, HISTORY, DONE }
     final ServerPlayer player;
     final ServerLevel level;
     final ServerController.State owner;
@@ -41,6 +41,7 @@ final class EditJob {
     final int width;
     final int depth;
     final boolean includeAir;
+    final boolean geometryAirOnly;
     boolean noHistory;
     final Map<BlockPos, Snapshot> before = new LinkedHashMap<>();
     final ListTag preview = new ListTag();
@@ -49,14 +50,19 @@ final class EditJob {
     BlockPos pasteOffset;
     EditSession edit;
     Iterator<Map.Entry<BlockPos, Snapshot>> historyIterator;
-    Iterator<Map.Entry<BlockPos, Snapshot>> validationIterator;
+    long comparedEntries;
+    BlockPos expectedPos;
+    BlockState expectedOld;
+    long differenceCount;
+    long truncatedParts;
+    final Map<BlockPos, String> differences = new LinkedHashMap<>();
+    final Set<BlockPos> highlights = new LinkedHashSet<>();
     long cursor;
     long changed;
     long planned;
     long snapshotBytes;
     long clipboardBytes;
-    long signature;
-    long validationSignature;
+
     int lastPercent = -1;
     boolean finished;
     boolean historyCommitted;
@@ -97,6 +103,7 @@ final class EditJob {
         this.origin = first.immutable();
         this.material = material;
         this.includeAir = owner.includeAir;
+        this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME);
         this.clipboard = clipboard;
         this.pasteOffset = offset;
         min = new BlockPos(Math.min(first.getX(), second.getX()), Math.min(first.getY(), second.getY()), Math.min(first.getZ(), second.getZ()));
@@ -106,11 +113,11 @@ final class EditJob {
         volume = RegionMath.volume(width, max.getY() - min.getY() + 1, depth);
         if (volume > BuilderMod.MAX_SCAN.get()) throw new IllegalArgumentException("范围超过扫描容量；可在 webuilder-common.toml 调整，但仍受实际内存限制。");
         if (!level.isInWorldBounds(min) || !level.isInWorldBounds(max)) throw new IllegalArgumentException("选区超出世界高度或边界。");
-        if (material != null && isMulti(material) && mode != Mode.COPY && mode != Mode.CUT) {
+        if (material != null && isMulti(material) && usesMaterial()) {
             throw new IllegalArgumentException("第一版支持床、门复制粘贴；暂不支持以它们批量填充或替换。");
         }
         if (material != null && material.getBlock() instanceof ChestBlock
-            && material.getValue(ChestBlock.TYPE) != ChestType.SINGLE && mode != Mode.COPY && mode != Mode.CUT) {
+            && material.getValue(ChestBlock.TYPE) != ChestType.SINGLE && usesMaterial()) {
             throw new IllegalArgumentException("第二点已连接为大箱子，请使用单箱作为填充材料，或复制完整大箱子。");
         }
         noHistory = mode != Mode.COPY && volume > BuilderMod.HISTORY_BLOCKS.get();
@@ -148,7 +155,6 @@ final class EditJob {
         if (phase != Phase.WARNING) return;
         allocateClipboard();
         phase = Phase.PREPARE;
-        ServerController.message(player, "已同意大范围方案，开始分批检查；尚未清理历史或修改世界。检查后仍需右键确认。");
         ServerController.status(player, owner);
     }
     void confirm() {
@@ -156,10 +162,11 @@ final class EditJob {
         if (ServerController.busy()) { ServerController.message(player, "另一个任务执行中，请稍后确认。"); return; }
         phase = Phase.VALIDATE;
         cursor = 0;
-        validationSignature = 1;
+        comparedEntries = 0; differenceCount = 0; differences.clear();
+        clipboardBytes = 0;
         ServerController.status(player, owner);
     }
-    boolean isWriting() { return phase == Phase.APPLY || phase == Phase.HISTORY || phase == Phase.VALIDATE || phase == Phase.NEIGHBORS; }
+    boolean isWriting() { return phase == Phase.APPLY || phase == Phase.HISTORY || phase == Phase.VALIDATE; }
     BlockPos position(long index) {
         int x = (int) (index % width);
         long rest = index / width;
@@ -173,10 +180,10 @@ final class EditJob {
             width, max.getY() - min.getY() + 1, depth);
     }
     Snapshot desired(BlockPos pos, Snapshot existing) {
-        if (!geometric(pos)) return null;
+        if (!geometric(pos) || skipMaterial(existing.state)) return null;
         return switch (mode) {
             case COPY -> null;
-            case CUT -> new Snapshot(Blocks.AIR.defaultBlockState(), null);
+            case CUT, CLEAR -> new Snapshot(Blocks.AIR.defaultBlockState(), null);
             case PASTE -> {
                 var source = ForgeAdapter.adapt(pos.subtract(pasteOffset));
                 if (!clipboard.getRegion().contains(source)) yield null;
@@ -189,6 +196,10 @@ final class EditJob {
             default -> null;
         };
     }
+    boolean skipMaterial(BlockState state) {
+        return usesMaterial() && (state.equals(material) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
+    }
+    boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.REPLACE; }
     static boolean isMulti(BlockState state) { return state.getBlock() instanceof BedBlock || state.getBlock() instanceof DoorBlock || state.getBlock() instanceof DoublePlantBlock; }
     static BlockPos partner(BlockPos pos, BlockState state) {
         if (state.getBlock() instanceof BedBlock) {
@@ -204,22 +215,13 @@ final class EditJob {
         return null;
     }
     void validateStructure(BlockPos pos, Snapshot old, Snapshot next) {
-        BlockPos oldPartner = partner(pos, old.state);
-        if (oldPartner != null && (mode == Mode.COPY || mode == Mode.CUT || next != null)) {
-            if (!contains(oldPartner) || !geometric(oldPartner)) throw new IllegalArgumentException("选区仅包含部分床、门、大箱子等结构，请扩大范围：" + pos.toShortString());
-            if (mode != Mode.COPY && mode != Mode.CUT && desired(oldPartner, Snapshot.read(level, oldPartner)) == null) {
-                throw new IllegalArgumentException("目标多格结构未被完整覆盖，请调整选区或匹配条件。");
-            }
+        if (mode == Mode.COPY || mode == Mode.CUT || next != null) {
+            BlockPos other = partner(pos, old.state);
+            if (other != null && (!contains(other) || !geometric(other))) truncatedParts++;
         }
         if (mode == Mode.PASTE && next != null) {
             BlockPos other = partner(pos, next.state);
-            if (other != null) {
-                if (!contains(other)) throw new IllegalArgumentException("剪贴板包含不完整的床、门或大箱子。");
-                Snapshot otherNext = desired(other, Snapshot.read(level, other));
-                if (otherNext == null || otherNext.state.getBlock() != next.state.getBlock()) {
-                    throw new IllegalArgumentException("剪贴板多格结构缺少另一部分。");
-                }
-            }
+            if (other != null && !clipboard.getRegion().contains(ForgeAdapter.adapt(other.subtract(pasteOffset)))) truncatedParts++;
         }
     }
     boolean capture(BlockPos pos) {
@@ -233,8 +235,36 @@ final class EditJob {
         }
         return true;
     }
-    long hash(long current, BlockPos pos, Snapshot value) {
-        return current * 31 + pos.hashCode() * 17L + value.state.hashCode() + Objects.hashCode(value.nbt);
+    void copyCell(BlockPos pos, Snapshot value) throws com.sk89q.worldedit.WorldEditException {
+        clipboardBytes += 64L + (value.nbt == null ? 0 : value.nbt.toString().length() * 2L);
+        if (clipboardBytes > 128L * 1024 * 1024) throw new IllegalStateException("剪贴板超出内存预算，任务已停止。");
+        clipboard.setBlock(ForgeAdapter.adapt(pos), value.toWorldEdit());
+    }
+    void readExpected() throws IOException {
+        if (comparedEntries == planned) { expectedPos = null; return; }
+        expectedPos = BlockPos.of(planInput.readLong());
+        expectedOld = Block.stateById(planInput.readInt());
+        planInput.readInt();
+        if (planInput.readBoolean()) NbtIo.read(planInput);
+        comparedEntries++;
+    }
+    void compareCell(BlockPos pos, Snapshot existing, Snapshot next) throws IOException {
+        boolean wasPlanned = pos.equals(expectedPos);
+        boolean stillPlanned = next != null && !sameAtPosition(existing, next, pos);
+        boolean changedType = wasPlanned && expectedOld.getBlock() != existing.state.getBlock();
+        if (wasPlanned != stillPlanned || changedType) {
+            differenceCount++;
+            if (differences.size() < 5) {
+                String change = !wasPlanned ? "新增匹配位置" : !stillPlanned ? "不再需要修改" : "目标方块类型改变";
+                differences.put(pos, change + "（" + existing.state + "）");
+            }
+        }
+        if (wasPlanned) readExpected();
+    }
+    void captureArea(BlockPos pos) {
+        boolean fits = capture(pos);
+        for (Direction d : Direction.values()) fits &= capture(pos.relative(d));
+        if (!fits) throw new IllegalStateException("执行期间快照超出容量，已中止并保留已执行部分的撤销记录。");
     }
     void tick() throws Exception {
         if (finished || phase == Phase.WARNING || phase == Phase.READY) return;
@@ -244,9 +274,13 @@ final class EditJob {
         if (phase == Phase.APPLY) {
             while (appliedEntries < planned && remaining-- > 0 && System.nanoTime() < deadline) {
                 BlockPos pos = BlockPos.of(planInput.readLong());
+                planInput.readInt(); // Original state used only during confirmation.
                 BlockState state = Block.stateById(planInput.readInt());
                 CompoundTag tag = planInput.readBoolean() ? NbtIo.read(planInput) : null;
                 if (!level.hasChunkAt(pos)) throw new IllegalStateException("执行范围的区块已卸载，任务中止。");
+                // A previously empty position can become occupied between batches.
+                if (skipMaterial(level.getBlockState(pos))) { appliedEntries++; continue; }
+                if (!noHistory) captureArea(pos);
                 Snapshot next = new Snapshot(state, tag);
                 // 7.2.15 BlockOptimizedHistory ignores ArrayListHistory.setRecordChanges(false)
                 // for block changes. The native stage API skips automatic history entirely.
@@ -266,18 +300,11 @@ final class EditJob {
             }
             return;
         }
-        if (phase == Phase.NEIGHBORS) {
-            while (validationIterator.hasNext() && remaining-- > 0 && System.nanoTime() < deadline) {
-                var entry = validationIterator.next();
-                if (!level.hasChunkAt(entry.getKey()) || !entry.getValue().same(Snapshot.read(level, entry.getKey()))) {
-                    refresh(); return;
-                }
-            }
-            if (!validationIterator.hasNext()) startWrite();
-            return;
+        if (cursor == 0 && phase == Phase.VALIDATE && mode != Mode.COPY && planInput == null) {
+            planInput = new DataInputStream(new BufferedInputStream(Files.newInputStream(planFile)));
+            readExpected();
         }
-        if (cursor == 0 && phase == Phase.PREPARE) {
-            signature = 1;
+        if (cursor == 0 && phase == Phase.PREPARE && planOutput == null) {
             if (mode != Mode.COPY) {
                 planFiles = PlanFiles.create();
                 planFile = planFiles.path;
@@ -289,23 +316,19 @@ final class EditJob {
             if (!level.hasChunkAt(pos)) throw new IllegalArgumentException("选区有未加载区块，请靠近或缩小范围。");
             if (!level.getWorldBorder().isWithinBounds(pos)) throw new IllegalArgumentException("选区超出世界边界。");
             Snapshot existing = Snapshot.read(level, pos);
+            Snapshot next = desired(pos, existing);
             if (phase == Phase.VALIDATE) {
-                validationSignature = hash(validationSignature, pos, existing);
+                if (mode == Mode.COPY || mode == Mode.CUT) copyCell(pos, existing);
+                if (mode != Mode.COPY) compareCell(pos, existing, next);
                 continue;
             }
-            Snapshot next = desired(pos, existing);
             if (phase == Phase.PREPARE) {
-                signature = hash(signature, pos, existing);
                 validateStructure(pos, existing, next);
-                if (mode == Mode.COPY || mode == Mode.CUT) {
-                    clipboardBytes += 64L + (existing.nbt == null ? 0 : existing.nbt.toString().length() * 2L);
-                    if (clipboardBytes > 128L * 1024 * 1024) throw new IllegalStateException("剪贴板实际数据超过内存预算，复制/剪切已停止，世界尚未修改。");
-                    clipboard.setBlock(ForgeAdapter.adapt(pos), existing.toWorldEdit());
-                }
                 if (next != null && !sameAtPosition(existing, next, pos)) {
                     planned++;
                     // Freeze the intended result before any neighbor updates can change replacement matches.
                     planOutput.writeLong(pos.asLong());
+                    planOutput.writeInt(Block.getId(existing.state));
                     planOutput.writeInt(Block.getId(next.state));
                     planOutput.writeBoolean(next.nbt != null);
                     if (next.nbt != null) NbtIo.write(next.nbt, planOutput);
@@ -332,17 +355,17 @@ final class EditJob {
             case PREPARE -> {
                 if (planOutput != null) { planOutput.close(); planOutput = null; }
                 phase = Phase.READY;
-                ServerController.message(player, mode == Mode.COPY ? "复制范围已就绪，右键确认，左键取消。" :
-                    "预览已就绪，预计修改 " + planned + " 个方块。右键确认，左键取消。" + (noHistory ? "【无法撤销，确认执行将清空共享历史】" : ""));
-                if (mode != Mode.COPY && planned > preview.size()) {
-                    ServerController.message(player, "本次仅显示 " + preview.size() + " 个位置的详细预览，其余以范围边框和修改数量表示。");
-                }
+                String ready = mode == Mode.COPY ? "复制范围就绪，" + volume + " 格。" : "选区就绪，预计修改 " + planned + " 格。";
+                if (truncatedParts > 0) ready += "含截断结构。";
+                if (mode != Mode.COPY && planned > preview.size()) ready += "预览已简化。";
+                if (noHistory) ready += "无法撤销，执行前清空全部共享历史。";
+                ServerController.message(player, ready);
                 ServerController.status(player, owner);
             }
             case VALIDATE -> {
-                if (signature != validationSignature) { refresh(); return; }
-                phase = Phase.NEIGHBORS;
-                validationIterator = before.entrySet().iterator();
+                if (planInput != null) { planInput.close(); planInput = null; }
+                if (differenceCount > 0) { refresh(); return; }
+                startWrite();
             }
             default -> { }
         }
@@ -358,9 +381,12 @@ final class EditJob {
     void refresh() {
         closePlan();
         before.clear(); preview.clear(); snapshotBytes = 0; clipboardBytes = 0; planned = 0; cursor = 0;
-        validationIterator = null;
+        truncatedParts = 0;
+        var first = differences.entrySet().iterator().next();
+        ServerController.message(player, "变化 " + differenceCount + " 处，" + first.getKey().toShortString()
+            + " " + first.getValue() + (highlights.contains(first.getKey()) ? "（持续变化）" : "") + "。请重新确认。");
+        highlights.clear(); highlights.addAll(differences.keySet());
         phase = Phase.PREPARE;
-        ServerController.message(player, "选区或邻接方块已变化，正在刷新预览；请再次确认。");
         ServerController.status(player, owner);
     }
     void warnSnapshotCapacity() {
@@ -374,7 +400,7 @@ final class EditJob {
     void startWrite() {
         if (mode == Mode.COPY) {
             ServerController.session(player).setClipboard(new ClipboardHolder(clipboard));
-            ServerController.message(player, "复制成功，共 " + volume + " 个位置；第一点为粘贴锚点。");
+            ServerController.message(player, "已复制 " + volume + " 格。");
             finish(); return;
         }
         if (planned == 0) { ServerController.message(player, "检查完成，没有需要修改的方块。"); finish(); return; }
@@ -396,6 +422,8 @@ final class EditJob {
             edit.close(); edit = null;
             throw new IllegalStateException("无法读取执行计划，世界尚未修改。", ex);
         }
+        // Re-capture each affected site immediately before its first write or neighbor update.
+        before.clear(); snapshotBytes = 0;
         if (noHistory) {
             ServerController.session(player).clearHistory();
             ServerController.message(player, "已按确认清空你的全部 WorldEdit 共享历史（含其他维度和手动操作）。本次无法撤销。");
@@ -417,7 +445,7 @@ final class EditJob {
             historyCommitted = true;
         }
         if (edit != null) { edit.close(); edit = null; }
-        ServerController.message(player, "执行完成，修改 " + changed + " 个方块。" + (noHistory ? "本次无法撤销。" : "已加入 WorldEdit 共享历史，可使用 /undo。"));
+        ServerController.message(player, "已修改 " + changed + " 格。" + (noHistory ? "本次无法撤销。" : ""));
         finish();
     }
     void stop(boolean report) {
@@ -443,7 +471,7 @@ final class EditJob {
     void finish() {
         finished = true; phase = Phase.DONE;
         closePlan();
-        before.clear(); preview.clear(); clipboard = null; historyIterator = null; validationIterator = null;
+        before.clear(); preview.clear(); clipboard = null; historyIterator = null;
     }
     void closePlan() {
         try { if (planOutput != null) planOutput.close(); } catch (IOException ignored) { }
@@ -461,7 +489,6 @@ final class EditJob {
             case PREPARE -> "准备预览 " + cursor * 100 / volume + "%";
             case READY -> "右键确认 / 左键取消";
             case VALIDATE -> "重新检查 " + cursor * 100 / volume + "%";
-            case NEIGHBORS -> "核对邻接结构";
             case APPLY -> "执行 " + appliedEntries * 100 / Math.max(1, planned) + "%（左键中止）";
             case HISTORY -> "整理撤销记录";
             case DONE -> "完成";
@@ -470,6 +497,9 @@ final class EditJob {
         data.putLong("min", min.asLong()); data.putLong("max", max.asLong());
         data.putLong("volume", volume); data.putLong("planned", planned);
         data.putBoolean("noHistory", noHistory);
-        if (phase == Phase.READY) data.put("preview", preview.copy());
+        if (phase == Phase.READY) {
+            data.put("preview", preview.copy());
+            data.putLongArray("highlights", highlights.stream().mapToLong(BlockPos::asLong).toArray());
+        }
     }
 }
