@@ -8,11 +8,15 @@ import net.minecraft.network.chat.Component;
 /** Wheel positions are stable so additional geometry can be added without changing existing modes. */
 final class ModeScreen extends Screen {
     ModeScreen() { super(Component.literal("交互建造菜单")); }
-    private Button air, continuous, geometryAir;
+    private Button air, continuous, geometryAir, overwrite;
     private int top() { return Math.max(5, (height - 205) / 2); }
     private int colWidth() { return Math.min(130, (width - 20) / 4); }
     private int left(int col) { return (width - colWidth() * 4) / 2 + col * colWidth(); }
     void syncOptions() {
+        if (overwrite != null) {
+            overwrite.setMessage(Component.literal("覆盖目标：" + (ClientController.status.getBoolean("overwrite") ? "开" : "关")));
+            overwrite.active = ClientController.status.getString("phase").isEmpty();
+        }
         if (geometryAir != null) {
             geometryAir.setMessage(Component.literal("几何体仅替换空气：" + (ClientController.status.getBoolean("geometryAirOnly") ? "开" : "关")));
             geometryAir.active = ClientController.status.getString("phase").isEmpty();
@@ -22,7 +26,7 @@ final class ModeScreen extends Screen {
     }
     private Button button(int col, int row, String name, Button.OnPress action) {
         return addRenderableWidget(Button.builder(Component.literal(name), action)
-            .bounds(left(col) + 2, top() + 46 + 23 * row, colWidth() - 4, 20).build());
+            .bounds(left(col) + 2, top() + 35 + 18 * row, colWidth() - 4, 17).build());
     }
     private void mode(int col, int row, Mode mode) {
         button(col, row, (mode == ClientController.mode() ? "● " : "") + mode.label, b -> {
@@ -44,7 +48,12 @@ final class ModeScreen extends Screen {
         mode(3, 0, Mode.CIRCLE); mode(3, 1, Mode.CURVE);
         mode(1, 0, Mode.COPY); mode(1, 1, Mode.CUT); mode(1, 2, Mode.PASTE);
         mode(1, 3, Mode.REPLACE); mode(1, 4, Mode.CLEAR);
+        mode(1, 5, Mode.STACK);
+        mode(3, 2, Mode.SPHERE); mode(3, 3, Mode.SHELL);
+        mode(3, 4, Mode.TRIANGLE); mode(3, 5, Mode.EDGES);
+        mode(3, 6, Mode.CYLINDER); mode(3, 7, Mode.WALL); mode(3, 8, Mode.CAPPED);
         mode(2, 0, Mode.NONE);
+        overwrite = button(2, 4, "", b -> Network.action(9, ClientController.status.getBoolean("overwrite") ? 0 : 1));
         continuous = button(2, 1, "", b -> Network.action(6, ClientController.status.getBoolean("continuous") ? 0 : 1));
         air = button(2, 2, "", b -> Network.action(3, ClientController.status.getBoolean("air") ? 0 : 1));
         geometryAir = button(2, 3, "", b -> Network.action(7, ClientController.status.getBoolean("geometryAirOnly") ? 0 : 1));
@@ -67,9 +76,7 @@ final class ModeScreen extends Screen {
             graphics.drawCenteredString(font, "交互建造", width / 2, top() + 4, 0xFFE6A3);
             String[] labels = {"建造形状", "编辑操作", "模式设置", "高级几何体"};
             for (int i = 0; i < labels.length; i++)
-                graphics.drawCenteredString(font, labels[i], left(i) + colWidth() / 2, top() + 30, 0xFFFFFF);
-            graphics.drawCenteredString(font, "放置方块选点 · 粘贴只需一个定位方块", width / 2, top() + 171, 0xDDDDDD);
-            graphics.drawCenteredString(font, "预览后右键确认，左键取消", width / 2, top() + 187, 0xDDDDDD);
+                graphics.drawCenteredString(font, labels[i], left(i) + colWidth() / 2, top() + 21, 0xFFFFFF);
         }
         super.render(graphics, mouseX, mouseY, partialTick);
     }

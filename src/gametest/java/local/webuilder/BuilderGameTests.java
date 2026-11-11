@@ -50,6 +50,89 @@ public final class BuilderGameTests {
         if (!job.finished) throw new AssertionError("Edit did not finish");
     }
     @GameTest(template = "empty", timeoutTicks = 200)
+    public static void geometryConnections(GameTestHelper h) throws Exception {
+        var player = player(h, "connections");
+        var level = h.getLevel();
+        var start = h.absolutePos(new BlockPos(2, 3, 2));
+        var outside = start.west();
+        var end = start.offset(2, 0, 2);
+        for (var block : java.util.List.of(Blocks.GLASS_PANE, Blocks.COBBLESTONE_WALL)) {
+            var sample = block.defaultBlockState();
+            for (BlockPos pos : BlockPos.betweenClosed(start.offset(-1,0,-1), end.offset(1,0,1)))
+                level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
+            level.setBlock(outside, sample, 3);
+            level.setBlock(end.east(), Blocks.STONE.defaultBlockState(), 3);
+            level.setBlock(end, net.minecraft.world.level.block.Block.updateFromNeighbourShapes(sample, level, end), 3);
+            var anchorState = level.getBlockState(end);
+            var previous = level.getBlockState(outside);
+            var owner = new ServerController.State();
+            owner.mode = Mode.FRAME;
+            var job = new EditJob(player, owner, start, end, level.getBlockState(end));
+            ready(job); execute(job);
+            for (BlockPos pos : BlockPos.betweenClosed(start.west(), end)) {
+                if (!pos.equals(outside) && (!job.contains(pos) || !job.geometric(pos))) continue;
+                var state = level.getBlockState(pos);
+                h.assertTrue(state.is(block) && state.equals(net.minecraft.world.level.block.Block.updateFromNeighbourShapes(state, level, pos)),
+                    "wrong connection " + block + " at " + pos);
+            }
+            ServerController.session(player).undo(null, ForgeAdapter.adaptPlayer(player));
+            h.assertTrue(level.getBlockState(outside).equals(previous) && level.getBlockState(start).isAir()
+                && level.getBlockState(end).equals(anchorState), "Connection undo failed");
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void advancedVariants(GameTestHelper h) throws Exception {
+        var p = player(h,"variants");
+        var a = h.absolutePos(new BlockPos(3,4,3));
+        for (Mode mode : new Mode[]{Mode.SPHERE,Mode.SHELL,Mode.TRIANGLE,Mode.EDGES,Mode.CYLINDER,Mode.WALL,Mode.CAPPED}) {
+            var s = new ServerController.State();
+            s.mode=mode;
+            s.middle=a.east(4);
+            var end=mode.sphere()?a.east(3):mode.triangle()?a.offset(0,4,4):a.below(2);
+            var job=new EditJob(p,s,a,end,Blocks.GOLD_BLOCK.defaultBlockState());
+            ready(job);
+            h.assertTrue(job.planned>0,"Empty shape");
+            if (mode.sphere()) h.assertTrue(job.geometric(a)==(mode==Mode.SPHERE) && job.geometric(end),"Sphere shell");
+            if (mode.triangle()) h.assertTrue(job.geometric(a.offset(1,1,1))==(mode==Mode.TRIANGLE) && job.geometric(end),"Triangle plane");
+            if (mode.cylinder()) h.assertTrue(job.max.getY()-job.min.getY()==2 && job.geometric(a)==(mode!=Mode.WALL)
+                && job.geometric(a.below())==(mode==Mode.CYLINDER) && job.geometric(s.middle.below()),"Cylinder wall/caps");
+            job.stop(false);
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void extendProtectedAndUndo(GameTestHelper h) throws Exception {
+        var p=player(h,"stack");
+        var s=ServerController.state(p);
+        var level=h.getLevel();
+        var a=h.absolutePos(new BlockPos(1,3,1));
+        try {
+            ServerController.action(p,0,Mode.STACK.ordinal());
+            ServerController.action(p,9,0);
+            level.setBlock(a,Blocks.GOLD_BLOCK.defaultBlockState(),2);
+            level.setBlock(a.east(),Blocks.IRON_BLOCK.defaultBlockState(),2);
+            level.setBlock(a.east(2),Blocks.DIAMOND_BLOCK.defaultBlockState(),2);
+            for (int i=3;i<=5;i++) level.setBlock(a.east(i),Blocks.AIR.defaultBlockState(),2);
+            ServerController.recordPlacement(p,s,a);
+            ServerController.recordPlacement(p,s,a.east());
+            ServerController.action(p,10,4);
+            ServerController.action(p,10,2);
+            var job=s.job;
+            ready(job);
+            h.assertTrue(job.volume==4 && job.planned==3,"Stack preview count");
+            execute(job);
+            h.assertTrue(level.getBlockState(a.east(2)).is(Blocks.DIAMOND_BLOCK) && level.getBlockState(a.east(3)).is(Blocks.IRON_BLOCK)
+                && level.getBlockState(a.east(4)).is(Blocks.GOLD_BLOCK) && level.getBlockState(a.east(5)).is(Blocks.IRON_BLOCK),"Stack writes");
+            ServerController.session(p).undo(null,ForgeAdapter.adaptPlayer(p));
+            for (int i=3;i<=5;i++) h.assertTrue(level.getBlockState(a.east(i)).isAir(),"Shared stack undo");
+        } finally {
+            ServerController.reset(p,s,false);
+            ServerController.STATES.remove(p.getUUID());
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
     public static void measureAndDismiss(GameTestHelper h) throws Exception {
         var p = player(h, "measure");
         var s = ServerController.state(p);

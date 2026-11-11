@@ -28,7 +28,7 @@ import java.nio.file.Path;
 
 /** Bounded server-thread preparation and execution. WorldEdit owns the final shared history. */
 final class EditJob {
-    enum Phase { WARNING, PREPARE, READY, VALIDATE, APPLY, HISTORY, DONE }
+    enum Phase { WARNING, PREPARE, READY, VALIDATE, APPLY, CONNECTIONS, HISTORY, DONE }
     final ServerPlayer player;
     final ServerLevel level;
     final ServerController.State owner;
@@ -38,6 +38,8 @@ final class EditJob {
     final BlockPos origin;
     final BlockPos end;
     final Circle circle;
+    final AdvancedShape shape;
+    final boolean protectTarget;
     final BlockState material;
     long volume;
     final CurvePath curve;
@@ -108,10 +110,25 @@ final class EditJob {
         this.end = second.immutable();
         this.material = material;
         this.includeAir = owner.includeAir;
-        this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE);
+        this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode.advancedShape() || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE);
+        this.protectTarget = !owner.overwrite && (mode == Mode.PASTE || mode == Mode.STACK);
+        this.shape = mode.advancedShape() ? new AdvancedShape(mode, first, mode.sphere() ? second : owner.middle, second) : null;
         this.clipboard = clipboard;
         this.pasteOffset = offset;
-        if (mode == Mode.CIRCLE) {
+        if (shape != null) {
+            circle = null;
+            min = shape.low; max = shape.high;
+        } else if (mode == Mode.STACK) {
+            circle = null;
+            BlockPos low = new BlockPos(Math.min(first.getX(),second.getX()),Math.min(first.getY(),second.getY()),Math.min(first.getZ(),second.getZ()));
+            BlockPos high = new BlockPos(Math.max(first.getX(),second.getX()),Math.max(first.getY(),second.getY()),Math.max(first.getZ(),second.getZ()));
+            int stride = owner.direction.getAxis().choose(high.getX()-low.getX(),high.getY()-low.getY(),high.getZ()-low.getZ())+1;
+            int far = Math.multiplyExact(stride,owner.copies);
+            if (far > 60000000) throw new IllegalArgumentException("延伸超出世界范围。");
+            boolean positive = owner.direction.getAxisDirection()==Direction.AxisDirection.POSITIVE;
+            min=low.relative(owner.direction,positive?stride:far);
+            max=high.relative(owner.direction,positive?far:stride);
+        } else if (mode == Mode.CIRCLE) {
             if (first.getY() != second.getY()) throw new IllegalArgumentException("请在圆心的同一高度放置圆周点。");
             circle = new Circle(second.getX() - first.getX(), second.getZ() - first.getZ());
             min = first.offset(-circle.radius, 0, -circle.radius);
@@ -185,7 +202,7 @@ final class EditJob {
         clipboardBytes = 0;
         ServerController.status(player, owner);
     }
-    boolean isWriting() { return phase == Phase.APPLY || phase == Phase.HISTORY || phase == Phase.VALIDATE; }
+    boolean isWriting() { return phase == Phase.APPLY || phase == Phase.CONNECTIONS || phase == Phase.HISTORY || phase == Phase.VALIDATE; }
     BlockPos position(long index) {
         if (curve != null) return BlockPos.of(curve.cells.getLong((int) index));
         if (circle != null) return circle.position(origin, index);
@@ -204,6 +221,7 @@ final class EditJob {
         return p.getX() >= min.getX() && p.getX() <= max.getX() && p.getY() >= min.getY() && p.getY() <= max.getY() && p.getZ() >= min.getZ() && p.getZ() <= max.getZ();
     }
     boolean geometric(BlockPos p) {
+        if (shape != null) return shape.includes(p);
         if (curve != null) return curve.visited.contains(p.asLong());
         if (circle != null) return p.getY() == origin.getY() && circle.contains(p.getX() - origin.getX(), p.getZ() - origin.getZ());
         if (mode == Mode.LINE) {
@@ -219,6 +237,13 @@ final class EditJob {
         return switch (mode) {
             case COPY -> null;
             case CUT, CLEAR -> new Snapshot(Blocks.AIR.defaultBlockState(), null);
+            case STACK -> {
+                BlockPos source = new BlockPos(sourceCoordinate(pos.getX(), origin.getX(), end.getX()),
+                    sourceCoordinate(pos.getY(), origin.getY(), end.getY()), sourceCoordinate(pos.getZ(), origin.getZ(), end.getZ()));
+                if (!level.hasChunkAt(source)) throw new IllegalArgumentException("源区域有未加载区块。");
+                Snapshot block = Snapshot.read(level, source);
+                yield !includeAir && block.state.isAir() ? null : block;
+            }
             case PASTE -> {
                 var source = ForgeAdapter.adapt(pos.subtract(pasteOffset));
                 if (!clipboard.getRegion().contains(source)) yield null;
@@ -227,14 +252,19 @@ final class EditJob {
                 yield block;
             }
             case REPLACE -> existing.state.equals(owner.source) ? new Snapshot(material, null) : null;
-            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE -> new Snapshot(material, null);
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> new Snapshot(material, null);
             default -> null;
         };
     }
+    private static int sourceCoordinate(int position, int a, int b) {
+        int low = Math.min(a,b);
+        return low + Math.floorMod(position-low,Math.abs(a-b)+1);
+    }
     boolean skipMaterial(BlockState state) {
+        if (protectTarget && (!state.isAir() || !state.getFluidState().isEmpty())) return true;
         return usesMaterial() && (state.equals(material) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
     }
-    boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE || mode == Mode.REPLACE; }
+    boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode.advancedShape() || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE || mode == Mode.REPLACE; }
     static boolean isMulti(BlockState state) { return state.getBlock() instanceof BedBlock || state.getBlock() instanceof DoorBlock || state.getBlock() instanceof DoublePlantBlock; }
     static BlockPos partner(BlockPos pos, BlockState state) {
         if (state.getBlock() instanceof BedBlock) {
@@ -301,6 +331,28 @@ final class EditJob {
         for (Direction d : Direction.values()) fits &= capture(pos.relative(d));
         if (!fits) throw new IllegalStateException("执行期间快照超出容量，已中止并保留已执行部分的撤销记录。");
     }
+    private static boolean connectsToNeighbors(BlockState state) {
+        return state.getBlock() instanceof CrossCollisionBlock || state.getBlock() instanceof WallBlock;
+    }
+    private boolean needsConnectionPass() {
+        return usesMaterial() && mode != Mode.REPLACE && material != null && connectsToNeighbors(material);
+    }
+    private void refreshConnection(BlockPos pos) {
+        if (!level.isInWorldBounds(pos)) return;
+        if (!level.hasChunkAt(pos)) throw new IllegalStateException("连接刷新范围的区块已卸载。");
+        BlockState old = level.getBlockState(pos);
+        if (!connectsToNeighbors(old)) return;
+        BlockState updated = Block.updateFromNeighbourShapes(old, level, pos);
+        if (updated == old || updated.getBlock() != old.getBlock()) return;
+        if (!noHistory && !capture(pos)) throw new IllegalStateException("连接刷新超出快照预算。");
+        // Only the derived state changes. The surrounding ring is refreshed explicitly.
+        level.setBlock(pos, updated, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+    }
+    private void beginHistory() {
+        phase = Phase.HISTORY;
+        historyIterator = before.entrySet().iterator();
+        ServerController.status(player, owner);
+    }
     void tick() throws Exception {
         if (finished || phase == Phase.WARNING || phase == Phase.READY) return;
         long deadline = System.nanoTime() + 3_000_000;
@@ -318,6 +370,22 @@ final class EditJob {
             return;
         }
         if (phase == Phase.HISTORY) { finishHistory(deadline, remaining); return; }
+        if (phase == Phase.CONNECTIONS) {
+            while (cursor < planned && remaining-- > 0 && System.nanoTime() < deadline) {
+                BlockPos pos = BlockPos.of(planInput.readLong());
+                planInput.readInt();
+                planInput.readInt();
+                if (planInput.readBoolean()) NbtIo.read(planInput);
+                refreshConnection(pos);
+                for (Direction side : Direction.values()) refreshConnection(pos.relative(side));
+                cursor++;
+            }
+            if (cursor == planned) {
+                planInput.close(); planInput = null;
+                beginHistory();
+            }
+            return;
+        }
         if (phase == Phase.APPLY) {
             while (appliedEntries < planned && remaining-- > 0 && System.nanoTime() < deadline) {
                 BlockPos pos = BlockPos.of(planInput.readLong());
@@ -328,6 +396,7 @@ final class EditJob {
                 // A previously empty position can become occupied between batches.
                 if (skipMaterial(level.getBlockState(pos))) { appliedEntries++; continue; }
                 if (!noHistory) captureArea(pos);
+                if (needsConnectionPass()) state = Block.updateFromNeighbourShapes(state, level, pos);
                 Snapshot next = new Snapshot(state, tag);
                 // 7.2.15 BlockOptimizedHistory ignores ArrayListHistory.setRecordChanges(false)
                 // for block changes. The native stage API skips automatic history entirely.
@@ -341,9 +410,12 @@ final class EditJob {
             if (appliedEntries == planned) {
                 planInput.close(); planInput = null;
                 edit.flushSession();
-                phase = Phase.HISTORY;
-                historyIterator = before.entrySet().iterator();
-                ServerController.status(player, owner);
+                if (needsConnectionPass()) {
+                    planInput = new DataInputStream(new BufferedInputStream(Files.newInputStream(planFile)));
+                    cursor = 0;
+                    phase = Phase.CONNECTIONS;
+                    ServerController.status(player, owner);
+                } else beginHistory();
             }
             return;
         }
@@ -537,6 +609,7 @@ final class EditJob {
             case READY -> "右键确认 / 左键取消";
             case VALIDATE -> "重新检查 " + cursor * 100 / volume + "%";
             case APPLY -> "执行 " + appliedEntries * 100 / Math.max(1, planned) + "%（左键中止）";
+            case CONNECTIONS -> "刷新方块连接";
             case HISTORY -> "整理撤销记录";
             case DONE -> "完成";
         });

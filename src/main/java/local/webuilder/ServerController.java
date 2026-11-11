@@ -35,7 +35,10 @@ public final class ServerController {
     static final class State {
         Mode mode = Mode.NONE;
         final List<BlockPos> controls = new ArrayList<>();
-        BlockPos first;
+        BlockPos first, middle;
+        boolean overwrite = true;
+        net.minecraft.core.Direction direction;
+        int copies;
         BlockState source;
         boolean includeAir;
         EditJob job;
@@ -53,8 +56,12 @@ public final class ServerController {
         return p.isCreative() && actor.hasPermission("worldedit.selection.pos") && actor.hasPermission("worldedit.setnbt");
     }
     static boolean allowedMode(ServerPlayer p, Mode mode) {
+        if (mode == Mode.STACK) {
+            var actor = ForgeAdapter.adaptPlayer(p);
+            return actor.hasPermission("worldedit.clipboard.copy") && actor.hasPermission("worldedit.clipboard.paste");
+        }
         String permission = switch (mode) {
-            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, CLEAR -> "worldedit.region.set";
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, CLEAR, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> "worldedit.region.set";
             case REPLACE -> "worldedit.region.replace";
             case COPY -> "worldedit.clipboard.copy";
             case CUT -> "worldedit.clipboard.cut";
@@ -73,6 +80,13 @@ public final class ServerController {
         data.putString("stage", s.first == null ? "放置第一点" : "放置第二点");
         if (s.mode == Mode.CURVE) data.putString("stage", "已选 " + s.controls.size() + " 点 · 空手潜行右键结束");
         if (s.mode == Mode.PASTE) data.putString("stage", "放置粘贴定位方块");
+        data.putBoolean("overwrite", s.overwrite);
+        if (s.middle != null && s.job == null) {
+            if (s.mode == Mode.STACK) {
+                data.putBoolean("stackInput", true);
+                data.putString("stage", s.direction == null ? "聊天输入方向 1–6" : "聊天输入新增副本数");
+            } else data.putString("stage", s.mode.cylinder() ? "放置高度点" : "放置第三个顶点");
+        }
         if (s.job != null) s.job.describe(data);
         Network.status(p, data);
     }
@@ -81,6 +95,7 @@ public final class ServerController {
         s.job = null;
         s.placements.clear();
         s.controls.clear();
+        s.middle = null; s.direction = null;
         s.first = null;
         s.source = null;
         status(p, s);
@@ -103,6 +118,28 @@ public final class ServerController {
                     s.mode = Mode.values()[value];
                     s.dimension = p.level().dimension().location().toString();
                     status(p, s);
+                }
+                case 9 -> {
+                    if (s.job == null) s.overwrite = value == 1;
+                    status(p,s);
+                }
+                case 10 -> {
+                    if (s.mode != Mode.STACK || s.middle == null || s.job != null || !allowedMode(p,s.mode)
+                        || !s.dimension.equals(p.level().dimension().location().toString())) return;
+                    if (s.direction == null) {
+                        var directions = new net.minecraft.core.Direction[]{net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.SOUTH,
+                            net.minecraft.core.Direction.WEST, net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.UP, net.minecraft.core.Direction.DOWN};
+                        if (value < 1 || value > 6) { message(p,"请输入方向编号 1–6。"); return; }
+                        s.direction = directions[value-1];
+                        message(p,"输入新增副本数（正整数）。");
+                    } else {
+                        if (value < 1) { message(p,"次数须为正整数。"); return; }
+                        s.copies = value;
+                        s.job = new EditJob(p,s,s.first,s.middle,null);
+                        s.middle = null;
+                        s.direction = null;
+                    }
+                    status(p,s);
                 }
                 case 8 -> {
                     if (s.mode != Mode.CURVE || s.job != null || !p.isShiftKeyDown()
@@ -176,6 +213,15 @@ public final class ServerController {
         } else if (s.first == null) {
             s.first = pos;
             s.source = after;
+        } else if (s.mode == Mode.STACK) {
+            if (s.middle != null) return;
+            s.middle = pos.immutable();
+            message(p,"聊天输入方向：1北 2南 3西 4东 5上 6下");
+        } else if ((s.mode.triangle() || s.mode.cylinder()) && s.middle == null) {
+            if (s.mode.cylinder() && pos.getY()!=s.first.getY()) {
+                message(p,"半径点须与底面圆心同高，请重新放置第二点。"); return;
+            }
+            s.middle = pos.immutable();
         } else if (s.mode == Mode.MEASURE) {
             CompoundTag guide = new CompoundTag();
             guide.putString("guideDimension", p.level().dimension().location().toString());
@@ -265,7 +311,7 @@ public final class ServerController {
         if (s.job != null) {
             try {
                 s.job.tick();
-                if (s.job.finished) { if (!s.continuous) s.mode = Mode.NONE; s.job = null; s.first = null; s.source = null; status(p, s); }
+                if (s.job.finished) { if (!s.continuous) s.mode = Mode.NONE; s.job = null; s.first = null; s.middle = null; s.direction = null; s.source = null; status(p, s); }
             } catch (Exception ex) {
                 message(p, "任务失败：" + ex.getMessage());
                 reset(p, s, true);

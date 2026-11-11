@@ -80,6 +80,16 @@ public final class ClientController {
             if (mc.player != null && mc.screen == null) mc.setScreen(new ModeScreen());
         }
     }
+    @SubscribeEvent public static void stackInput(ClientChatEvent event) {
+        if (!status.getBoolean("stackInput")) return;
+        event.setCanceled(true);
+        try {
+            Network.action(10,Integer.parseInt(event.getMessage().trim()));
+        } catch (NumberFormatException ex) {
+            var player=Minecraft.getInstance().player;
+            if (player!=null) player.displayClientMessage(net.minecraft.network.chat.Component.literal("请输入有效整数。"),false);
+        }
+    }
     @SubscribeEvent public static void guideClick(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickEmpty event) {
         Minecraft mc = Minecraft.getInstance();
         if (event.getHand() != net.minecraft.world.InteractionHand.MAIN_HAND || event.getEntity() != mc.player
