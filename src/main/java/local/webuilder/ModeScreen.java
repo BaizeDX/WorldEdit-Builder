@@ -10,8 +10,8 @@ final class ModeScreen extends Screen {
     ModeScreen() { super(Component.literal("交互建造菜单")); }
     private Button air, continuous, geometryAir;
     private int top() { return Math.max(5, (height - 205) / 2); }
-    private int colWidth() { return Math.min(130, (width - 20) / 3); }
-    private int left(int col) { return (width - colWidth() * 3) / 2 + col * colWidth(); }
+    private int colWidth() { return Math.min(130, (width - 20) / 4); }
+    private int left(int col) { return (width - colWidth() * 4) / 2 + col * colWidth(); }
     void syncOptions() {
         if (geometryAir != null) {
             geometryAir.setMessage(Component.literal("几何体仅替换空气：" + (ClientController.status.getBoolean("geometryAirOnly") ? "开" : "关")));
@@ -40,7 +40,8 @@ final class ModeScreen extends Screen {
             return;
         }
         mode(0, 0, Mode.SOLID); mode(0, 1, Mode.HOLLOW); mode(0, 2, Mode.FRAME);
-        button(0, 3, "更多形状（预留）", b -> {}).active = false;
+        mode(0, 3, Mode.LINE); mode(0, 4, Mode.MEASURE);
+        mode(3, 0, Mode.CIRCLE); mode(3, 1, Mode.CURVE);
         mode(1, 0, Mode.COPY); mode(1, 1, Mode.CUT); mode(1, 2, Mode.PASTE);
         mode(1, 3, Mode.REPLACE); mode(1, 4, Mode.CLEAR);
         mode(2, 0, Mode.NONE);
@@ -64,7 +65,7 @@ final class ModeScreen extends Screen {
             graphics.drawCenteredString(font, "检查完成后还需右键确认执行", width / 2, height / 2 + 28, 0xFFFFFF);
         } else {
             graphics.drawCenteredString(font, "交互建造", width / 2, top() + 4, 0xFFE6A3);
-            String[] labels = {"建造形状", "编辑操作", "模式设置"};
+            String[] labels = {"建造形状", "编辑操作", "模式设置", "高级几何体"};
             for (int i = 0; i < labels.length; i++)
                 graphics.drawCenteredString(font, labels[i], left(i) + colWidth() / 2, top() + 30, 0xFFFFFF);
             graphics.drawCenteredString(font, "放置方块选点 · 粘贴只需一个定位方块", width / 2, top() + 171, 0xDDDDDD);

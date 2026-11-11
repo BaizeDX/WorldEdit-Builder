@@ -34,6 +34,7 @@ public final class ServerController {
     static final Map<UUID, State> STATES = new HashMap<>();
     static final class State {
         Mode mode = Mode.NONE;
+        final List<BlockPos> controls = new ArrayList<>();
         BlockPos first;
         BlockState source;
         boolean includeAir;
@@ -53,7 +54,7 @@ public final class ServerController {
     }
     static boolean allowedMode(ServerPlayer p, Mode mode) {
         String permission = switch (mode) {
-            case SOLID, HOLLOW, FRAME, CLEAR -> "worldedit.region.set";
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, CLEAR -> "worldedit.region.set";
             case REPLACE -> "worldedit.region.replace";
             case COPY -> "worldedit.clipboard.copy";
             case CUT -> "worldedit.clipboard.cut";
@@ -70,6 +71,7 @@ public final class ServerController {
         data.putBoolean("air", s.includeAir);
         data.putBoolean("continuous", s.continuous);
         data.putString("stage", s.first == null ? "放置第一点" : "放置第二点");
+        if (s.mode == Mode.CURVE) data.putString("stage", "已选 " + s.controls.size() + " 点 · 空手潜行右键结束");
         if (s.mode == Mode.PASTE) data.putString("stage", "放置粘贴定位方块");
         if (s.job != null) s.job.describe(data);
         Network.status(p, data);
@@ -78,6 +80,7 @@ public final class ServerController {
         if (s.job != null) s.job.stop(report);
         s.job = null;
         s.placements.clear();
+        s.controls.clear();
         s.first = null;
         s.source = null;
         status(p, s);
@@ -85,7 +88,7 @@ public final class ServerController {
     public static void action(ServerPlayer p, int action, int value) {
         State s = state(p);
         if (!allowed(p)) {
-            if (s.job != null) reset(p, s, true);
+            reset(p, s, true);
             s.mode = Mode.NONE;
             status(p, s);
             message(p, "需要创造模式、WorldEdit 选区和方块数据权限（worldedit.setnbt），以免内容数据被本体过滤。");
@@ -99,6 +102,14 @@ public final class ServerController {
                     reset(p, s, true);
                     s.mode = Mode.values()[value];
                     s.dimension = p.level().dimension().location().toString();
+                    status(p, s);
+                }
+                case 8 -> {
+                    if (s.mode != Mode.CURVE || s.job != null || !p.isShiftKeyDown()
+                        || !p.getMainHandItem().isEmpty() || !allowedMode(p, s.mode)) return;
+                    if (s.controls.size() < 2) { message(p, "至少需要两个控制点。"); return; }
+                    s.job = new EditJob(p, s, s.controls.get(0), s.controls.get(s.controls.size()-1), s.source);
+                    s.controls.clear();
                     status(p, s);
                 }
                 case 1 -> { if (s.job != null) s.job.confirm(); }
@@ -143,14 +154,37 @@ public final class ServerController {
         State state = STATES.get(player.getUUID());
         return state != null && state.job != null;
     }
+    static String measurement(BlockPos a, BlockPos b) {
+        int dx = b.getX() - a.getX(), dz = b.getZ() - a.getZ();
+        long tenths = Math.floorMod(Math.round(Math.toDegrees(Math.atan2(dx, -dz)) * 10), 3600L);
+        String angle = dx == 0 && dz == 0 ? "无水平方向" : String.format(Locale.ROOT, "%.1f°", tenths / 10.0);
+        return String.format(Locale.ROOT, "(%s) → (%s) · ΔX %+d ΔY %+d ΔZ %+d · %.2f 格 · 方位 %s",
+            a.toShortString(), b.toShortString(), dx, b.getY()-a.getY(), dz, Math.sqrt(a.distSqr(b)), angle);
+    }
+
     static void recordPlacement(ServerPlayer p, State s, BlockPos pos) throws Exception {
+        if (s.mode == Mode.NONE) return;
         BlockState after = p.level().getBlockState(pos);
         if (after.isAir()) return;
-        if (s.mode == Mode.PASTE) {
+        if (s.mode == Mode.CURVE) {
+            if (!s.controls.isEmpty() && s.controls.get(s.controls.size()-1).equals(pos)) return;
+            if (s.controls.size() >= 4096) { message(p, "已达 4096 个控制点，请结束选点。"); return; }
+            s.controls.add(pos.immutable());
+            s.source = after;
+        } else if (s.mode == Mode.PASTE) {
             s.job = EditJob.paste(p, s, pos);
         } else if (s.first == null) {
             s.first = pos;
             s.source = after;
+        } else if (s.mode == Mode.MEASURE) {
+            CompoundTag guide = new CompoundTag();
+            guide.putString("guideDimension", p.level().dimension().location().toString());
+            guide.putLong("start", s.first.asLong());
+            guide.putLong("end", pos.asLong());
+            Network.status(p, guide);
+            message(p, measurement(s.first, pos));
+            s.first = null; s.source = null;
+            if (!s.continuous) s.mode = Mode.NONE;
         } else {
             if (!p.level().hasChunkAt(s.first)) throw new IllegalArgumentException("第一点所在区块已卸载，请重新选点。");
             s.source = p.level().getBlockState(s.first);

@@ -3,7 +3,7 @@ loaderVersion="[47,)"
 license="GPL-3.0-or-later"
 [[mods]]
 modId="webuilder"
-version="0.1.2"
+version="0.1.3"
 displayName="创世神：交互建造"
 authors="Local project"
 description='''通过菜单、真实放置选点和预览使用 WorldEdit。'''

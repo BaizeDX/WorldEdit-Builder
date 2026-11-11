@@ -50,12 +50,121 @@ public final class BuilderGameTests {
         if (!job.finished) throw new AssertionError("Edit did not finish");
     }
     @GameTest(template = "empty", timeoutTicks = 200)
+    public static void measureAndDismiss(GameTestHelper h) throws Exception {
+        var p = player(h, "measure");
+        var s = ServerController.state(p);
+        var a = h.absolutePos(new BlockPos(1, 2, 1));
+        var b = a.east(3).above(4);
+        try {
+            ServerController.action(p, 0, Mode.MEASURE.ordinal());
+            for (var point : java.util.List.of(a,b)) {
+                h.getLevel().setBlock(point, Blocks.STONE.defaultBlockState(), 2);
+                ServerController.recordPlacement(p,s,point);
+            }
+            h.assertTrue(s.first == null && s.mode == Mode.NONE && s.job == null, "Missing measurement");
+            var result = ServerController.measurement(a,b);
+            h.assertTrue(result.contains("5.00") && result.contains("90.0°"), "Distance/bearing");
+            h.assertTrue(ServerController.measurement(a,a.above()).contains("无水平方向"), "Vertical bearing");
+            h.assertTrue(result.contains("ΔX +3 ΔY +4 ΔZ +0"), "Missing signed components");
+            var guide = new MeasureGuide("test", a, a.east(12));
+            h.assertTrue(guide.markers().size() == 5 && guide.markers().get(a.east(3))
+                && !guide.markers().get(a.east(8)), "Incorrect fractions");
+            h.assertTrue(new MeasureGuide("test", a,a).markers().equals(java.util.Map.of(a,true)), "Overlap priority");
+            h.assertTrue(Double.isFinite(guide.hitDistance(net.minecraft.world.phys.Vec3.atCenterOf(a.north(4)),
+                new net.minecraft.world.phys.Vec3(0,0,1))), "Guide picking failed");
+        } finally {
+            ServerController.STATES.remove(p.getUUID());
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void curveSelectionAndHistory(GameTestHelper h) throws Exception {
+        var p = player(h, "curve");
+        var state = ServerController.state(p);
+        var level = h.getLevel();
+        var base = h.absolutePos(new BlockPos(1, 2, 1));
+        var points = java.util.List.of(base, base.offset(2, 2, 0), base.offset(4, 1, 3), base.offset(2, 0, 4));
+        try {
+            ServerController.action(p, 0, Mode.CURVE.ordinal());
+            p.setShiftKeyDown(true);
+            p.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            for (BlockPos pos : points) {
+                level.setBlock(pos, Blocks.GOLD_BLOCK.defaultBlockState(), 2);
+                ServerController.recordPlacement(p, state, pos);
+            }
+            h.assertTrue(state.job == null, "Collect points until explicit finish");
+            ServerController.action(p, 8, 0);
+            EditJob job = state.job;
+            ready(job);
+            h.assertTrue(job.planned > 0 && !job.preview.isEmpty(), "Missing curve preview");
+            for (var pos : points) h.assertTrue(job.geometric(pos), "Missed control");
+            var mirrorOrigin = base.offset(8, 3, 8);
+            var mirrored = new CurvePath(points.stream().map(pos -> mirrorOrigin.offset(
+                base.getX()-pos.getX(), base.getY()-pos.getY(), pos.getZ()-base.getZ())).toList());
+            while (!mirrored.complete) mirrored.advance(level);
+            h.assertTrue(job.volume == mirrored.cells.size(), "Mirror length");
+            for (int i = 0; i < job.volume; i++) {
+                var pos = job.position(i);
+                h.assertTrue(mirrorOrigin.offset(base.getX()-pos.getX(), base.getY()-pos.getY(),
+                    pos.getZ()-base.getZ()).asLong() == mirrored.cells.getLong(i), "Mirror mismatch");
+                if (i > 0) h.assertTrue(pos.distSqr(job.position(i-1)) <= 3, "Gap");
+            }
+            var probe = BlockPos.of(job.preview.getCompound(0).getLong("pos"));
+            var before = level.getBlockState(probe);
+            execute(job);
+            h.assertTrue(level.getBlockState(probe).is(Blocks.GOLD_BLOCK), "Curve write");
+            ServerController.session(p).undo(null, ForgeAdapter.adaptPlayer(p));
+            h.assertTrue(level.getBlockState(probe).equals(before), "Curve undo");
+
+            var line = new CurvePath(java.util.List.of(base, base.offset(-6, 2, 3)));
+            while (!line.complete) line.advance(level);
+            h.assertTrue(line.cells.size() == 7, "Two-point fallback length");
+            for (int i = 0; i <= 6; i++) h.assertTrue(line.cells.getLong(i) == base.offset(-i,
+                RegionMath.lineCoordinate(0, 2, i, 6), RegionMath.lineCoordinate(0, 3, i, 6)).asLong(), "Two-point path");
+            var retrace = new CurvePath(java.util.List.of(base, base.east(4), base));
+            while (!retrace.complete) retrace.advance(level);
+            h.assertTrue(retrace.cells.size() == 5, "Retraced cells duplicated");
+        } finally {
+            ServerController.reset(p, state, false);
+            ServerController.STATES.remove(p.getUUID());
+        }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void circleOutline(GameTestHelper h) throws Exception {
+        BlockPos center = h.absolutePos(new BlockPos(3, 2, 3));
+        for (int dx = 1; dx <= 24; dx++) {
+            for (int dz = 0; dz <= dx; dz++) {
+                Circle circle = new Circle(dx, dz);
+                var cells = new java.util.HashSet<BlockPos>();
+                BlockPos previous = circle.position(center, 4L * circle.quarter - 1);
+                for (int i = 0; i < 4 * circle.quarter; i++) {
+                    BlockPos point = circle.position(center, i);
+                    h.assertTrue(cells.add(point) && point.distSqr(previous) <= 2
+                        && circle.contains(point.getX() - center.getX(), point.getZ() - center.getZ()), "Broken circle");
+                    previous = point;
+                }
+                h.assertTrue(cells.contains(center.offset(dx, 0, dz)) && !cells.contains(center), "Invalid radius");
+            }
+        }
+        var player = player(h, "circle");
+        var owner = new ServerController.State(); owner.mode = Mode.CIRCLE;
+        var material = Blocks.GOLD_BLOCK.defaultBlockState();
+        var job = new EditJob(player, owner, center, center.east(2), material);
+        owner.job = job;
+        var interior = h.getLevel().getBlockState(center);
+        ready(job); execute(job);
+        h.assertTrue(job.volume == 12 && h.getLevel().getBlockState(center.west(2)).equals(material)
+            && h.getLevel().getBlockState(center).equals(interior), "Circle edit failed");
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
     public static void geometryAirOnlyProtectsWaterAndBlocks(GameTestHelper h) throws Exception {
         var p = player(h, "air-only");
         var level = h.getLevel();
         var start = h.absolutePos(new BlockPos(1, 2, 1));
         var material = Blocks.STONE.defaultBlockState();
-        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME}) {
+        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME, Mode.LINE}) {
             level.setBlock(start, Blocks.GOLD_BLOCK.defaultBlockState(), 2);
             level.setBlock(start.east(), Blocks.WATER.defaultBlockState(), 2);
             level.setBlock(start.east(2), Blocks.AIR.defaultBlockState(), 2);
@@ -80,7 +189,7 @@ public final class BuilderGameTests {
         level.setBlock(pos, material, 2);
         var chest = (ChestBlockEntity) level.getBlockEntity(pos);
         chest.setItem(4, new ItemStack(Items.DIAMOND, 8));
-        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME, Mode.REPLACE}) {
+        for (Mode mode : new Mode[]{Mode.SOLID, Mode.HOLLOW, Mode.FRAME, Mode.LINE, Mode.REPLACE}) {
             var owner = new ServerController.State(); owner.mode = mode; owner.source = material;
             var job = new EditJob(p, owner, pos, pos, material); owner.job = job;
             ready(job);

@@ -33,11 +33,14 @@ final class EditJob {
     final ServerLevel level;
     final ServerController.State owner;
     final Mode mode;
-    final BlockPos min;
-    final BlockPos max;
+    BlockPos min;
+    BlockPos max;
     final BlockPos origin;
+    final BlockPos end;
+    final Circle circle;
     final BlockState material;
-    final long volume;
+    long volume;
+    final CurvePath curve;
     final int width;
     final int depth;
     final boolean includeAir;
@@ -100,17 +103,33 @@ final class EditJob {
         this.level = player.serverLevel();
         this.owner = owner;
         this.mode = owner.mode;
+        this.curve = mode == Mode.CURVE ? new CurvePath(owner.controls) : null;
         this.origin = first.immutable();
+        this.end = second.immutable();
         this.material = material;
         this.includeAir = owner.includeAir;
-        this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME);
+        this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE);
         this.clipboard = clipboard;
         this.pasteOffset = offset;
-        min = new BlockPos(Math.min(first.getX(), second.getX()), Math.min(first.getY(), second.getY()), Math.min(first.getZ(), second.getZ()));
-        max = new BlockPos(Math.max(first.getX(), second.getX()), Math.max(first.getY(), second.getY()), Math.max(first.getZ(), second.getZ()));
+        if (mode == Mode.CIRCLE) {
+            if (first.getY() != second.getY()) throw new IllegalArgumentException("请在圆心的同一高度放置圆周点。");
+            circle = new Circle(second.getX() - first.getX(), second.getZ() - first.getZ());
+            min = first.offset(-circle.radius, 0, -circle.radius);
+            max = first.offset(circle.radius, 0, circle.radius);
+        } else {
+            circle = null;
+            min = new BlockPos(Math.min(first.getX(), second.getX()), Math.min(first.getY(), second.getY()), Math.min(first.getZ(), second.getZ()));
+            max = new BlockPos(Math.max(first.getX(), second.getX()), Math.max(first.getY(), second.getY()), Math.max(first.getZ(), second.getZ()));
+        }
         width = max.getX() - min.getX() + 1;
         depth = max.getZ() - min.getZ() + 1;
-        volume = RegionMath.volume(width, max.getY() - min.getY() + 1, depth);
+        int height = max.getY() - min.getY() + 1;
+        volume = switch (mode) {
+            case CURVE -> curve.estimate;
+            case CIRCLE -> 4L * circle.quarter;
+            case LINE -> Math.max(width, Math.max(height, depth));
+            default -> RegionMath.volume(width, height, depth);
+        };
         if (volume > BuilderMod.MAX_SCAN.get()) throw new IllegalArgumentException("范围超过扫描容量；可在 webuilder-common.toml 调整，但仍受实际内存限制。");
         if (!level.isInWorldBounds(min) || !level.isInWorldBounds(max)) throw new IllegalArgumentException("选区超出世界高度或边界。");
         if (material != null && isMulti(material) && usesMaterial()) {
@@ -168,6 +187,15 @@ final class EditJob {
     }
     boolean isWriting() { return phase == Phase.APPLY || phase == Phase.HISTORY || phase == Phase.VALIDATE; }
     BlockPos position(long index) {
+        if (curve != null) return BlockPos.of(curve.cells.getLong((int) index));
+        if (circle != null) return circle.position(origin, index);
+        if (mode == Mode.LINE) {
+            long steps = volume - 1;
+            return new BlockPos(
+                RegionMath.lineCoordinate(origin.getX(), end.getX(), index, steps),
+                RegionMath.lineCoordinate(origin.getY(), end.getY(), index, steps),
+                RegionMath.lineCoordinate(origin.getZ(), end.getZ(), index, steps));
+        }
         int x = (int) (index % width);
         long rest = index / width;
         return new BlockPos(min.getX() + x, min.getY() + (int) (rest / depth), min.getZ() + (int) (rest % depth));
@@ -176,6 +204,13 @@ final class EditJob {
         return p.getX() >= min.getX() && p.getX() <= max.getX() && p.getY() >= min.getY() && p.getY() <= max.getY() && p.getZ() >= min.getZ() && p.getZ() <= max.getZ();
     }
     boolean geometric(BlockPos p) {
+        if (curve != null) return curve.visited.contains(p.asLong());
+        if (circle != null) return p.getY() == origin.getY() && circle.contains(p.getX() - origin.getX(), p.getZ() - origin.getZ());
+        if (mode == Mode.LINE) {
+            long index = Math.max(Math.abs(p.getX() - origin.getX()), Math.max(
+                Math.abs(p.getY() - origin.getY()), Math.abs(p.getZ() - origin.getZ())));
+            return index < volume && position(index).equals(p);
+        }
         return RegionMath.includes(mode, p.getX() - min.getX(), p.getY() - min.getY(), p.getZ() - min.getZ(),
             width, max.getY() - min.getY() + 1, depth);
     }
@@ -192,14 +227,14 @@ final class EditJob {
                 yield block;
             }
             case REPLACE -> existing.state.equals(owner.source) ? new Snapshot(material, null) : null;
-            case SOLID, HOLLOW, FRAME -> new Snapshot(material, null);
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE -> new Snapshot(material, null);
             default -> null;
         };
     }
     boolean skipMaterial(BlockState state) {
         return usesMaterial() && (state.equals(material) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
     }
-    boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.REPLACE; }
+    boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE || mode == Mode.REPLACE; }
     static boolean isMulti(BlockState state) { return state.getBlock() instanceof BedBlock || state.getBlock() instanceof DoorBlock || state.getBlock() instanceof DoublePlantBlock; }
     static BlockPos partner(BlockPos pos, BlockState state) {
         if (state.getBlock() instanceof BedBlock) {
@@ -270,6 +305,18 @@ final class EditJob {
         if (finished || phase == Phase.WARNING || phase == Phase.READY) return;
         long deadline = System.nanoTime() + 3_000_000;
         int remaining = BuilderMod.BATCH.get();
+        if (curve != null && !curve.complete) {
+            // Reserve room for primitive array growth during rehashing.
+            if (freeHeap() < 192L * 1024 * 1024 + 32L * curve.cells.size())
+                throw new IllegalStateException("曲线路径超过可用内存。");
+            while (!curve.complete && remaining-- > 0 && System.nanoTime() < deadline) curve.advance(level);
+            if (curve.complete) {
+                min = curve.min; max = curve.max; volume = curve.cells.size();
+                noHistory = volume > BuilderMod.HISTORY_BLOCKS.get();
+                ServerController.status(player, owner);
+            }
+            return;
+        }
         if (phase == Phase.HISTORY) { finishHistory(deadline, remaining); return; }
         if (phase == Phase.APPLY) {
             while (appliedEntries < planned && remaining-- > 0 && System.nanoTime() < deadline) {
@@ -486,7 +533,7 @@ final class EditJob {
     void describe(CompoundTag data) {
         data.putString("stage", switch (phase) {
             case WARNING -> "大范围警告：按 ~ 查看并确认";
-            case PREPARE -> "准备预览 " + cursor * 100 / volume + "%";
+            case PREPARE -> curve != null && !curve.complete ? "生成曲线路径" : "准备预览 " + cursor * 100 / volume + "%";
             case READY -> "右键确认 / 左键取消";
             case VALIDATE -> "重新检查 " + cursor * 100 / volume + "%";
             case APPLY -> "执行 " + appliedEntries * 100 / Math.max(1, planned) + "%（左键中止）";
