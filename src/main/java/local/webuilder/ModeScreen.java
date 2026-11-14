@@ -8,9 +8,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.components.Tooltip;
 final class ModeScreen extends Screen {
     ModeScreen() { super(Component.literal("交互建造菜单")); }
-    private enum Page { MAIN, GEOMETRY, TRIANGLE, CYLINDER }
+    private enum Page { MAIN, GEOMETRY, SPHERE, TRIANGLE, CYLINDER }
     private Page page = Page.MAIN;
-    private static Mode triangle = Mode.TRIANGLE, cylinder = Mode.CYLINDER;
+    private static Mode sphere = Mode.SPHERE, triangle = Mode.TRIANGLE, cylinder = Mode.CYLINDER;
     private Button air, continuous, geometryAir, overwrite;
     private int top() { return Math.max(5, (height - 205) / 2); }
     private int colWidth() { return Math.min(130, (width - 20) / 3); }
@@ -50,27 +50,39 @@ final class ModeScreen extends Screen {
         row(index, (mode == ClientController.mode() ? "● " : "") + mode.label, settings == null ? 0 : 25,
             b -> { Network.action(0, mode.ordinal()); onClose(); });
         if (settings == null) return;
-        String label = settings == Page.TRIANGLE ? "三角形设置" : "圆柱设置";
+        String label = titleFor(settings);
         addRenderableWidget(Button.builder(Component.literal("⚙"), b -> show(settings))
             .bounds((width - panelWidth()) / 2 + panelWidth() - 22, top() + 28 + index * 22, 22, 20)
             .tooltip(Tooltip.create(Component.literal(label)))
             .createNarration(supplier -> Component.literal(label)).build());
     }
+    private static String titleFor(Page page) {
+        return switch (page) {
+            case SPHERE -> "球体设置";
+            case TRIANGLE -> "三角形设置";
+            case CYLINDER -> "圆柱设置";
+            default -> "高级几何体";
+        };
+    }
     private void geometryPage() {
         if (page == Page.GEOMETRY) {
             shape(0, Mode.CIRCLE, null); shape(1, Mode.CURVE, null);
-            shape(2, Mode.SPHERE, null); shape(3, Mode.SHELL, null);
-            shape(4, triangle, Page.TRIANGLE); shape(5, cylinder, Page.CYLINDER);
-            row(6, "返回主菜单", 0, b -> show(Page.MAIN));
+            shape(2, sphere, Page.SPHERE);
+            shape(3, triangle, Page.TRIANGLE); shape(4, cylinder, Page.CYLINDER);
+            row(5, "返回主菜单", 0, b -> show(Page.MAIN));
             return;
         }
-        boolean isTriangle = page == Page.TRIANGLE;
-        Mode[] options = isTriangle ? new Mode[]{Mode.TRIANGLE, Mode.EDGES}
-            : new Mode[]{Mode.CYLINDER, Mode.WALL, Mode.CAPPED};
+        Mode[] options = switch (page) {
+            case SPHERE -> new Mode[]{Mode.SPHERE, Mode.SHELL};
+            case TRIANGLE -> new Mode[]{Mode.TRIANGLE, Mode.EDGES};
+            case CYLINDER -> new Mode[]{Mode.CYLINDER, Mode.WALL, Mode.CAPPED};
+            default -> throw new IllegalStateException("Invalid settings page");
+        };
         for (int i = 0; i < options.length; i++) {
             Mode option = options[i];
-            row(i, (option == (isTriangle ? triangle : cylinder) ? "● " : "") + option.label, 0, b -> {
-                if (isTriangle) triangle = option;
+            row(i, ((option == sphere || option == triangle || option == cylinder) ? "● " : "") + option.label, 0, b -> {
+                if (page == Page.SPHERE) sphere = option;
+                else if (page == Page.TRIANGLE) triangle = option;
                 else cylinder = option;
                 show(Page.GEOMETRY);
             });
@@ -118,12 +130,7 @@ final class ModeScreen extends Screen {
             }
             graphics.drawCenteredString(font, "检查完成后还需右键确认执行", width / 2, height / 2 + 28, 0xFFFFFF);
         } else if (page != Page.MAIN) {
-            String title = switch (page) {
-                case TRIANGLE -> "三角形设置";
-                case CYLINDER -> "圆柱设置";
-                default -> "高级几何体";
-            };
-            graphics.drawCenteredString(font, title, width / 2, top() + 8, 0xFFE6A3);
+            graphics.drawCenteredString(font, titleFor(page), width / 2, top() + 8, 0xFFE6A3);
         } else {
             graphics.drawCenteredString(font, "交互建造", width / 2, top() + 4, 0xFFE6A3);
             String[] labels = {"建造形状", "编辑操作", "模式设置"};
