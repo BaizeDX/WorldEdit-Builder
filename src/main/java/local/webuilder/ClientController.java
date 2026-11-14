@@ -25,6 +25,10 @@ import org.lwjgl.glfw.GLFW;
 public final class ClientController {
     static final KeyMapping MENU = new KeyMapping("key.webuilder.menu", InputConstants.Type.KEYSYM,
         GLFW.GLFW_KEY_GRAVE_ACCENT, "key.categories.webuilder");
+    static final KeyMapping LAST = new KeyMapping("key.webuilder.last", InputConstants.Type.KEYSYM,
+        GLFW.GLFW_KEY_G, "key.categories.webuilder");
+    static final KeyMapping SOUL = new KeyMapping("key.webuilder.soul", InputConstants.Type.KEYSYM,
+        GLFW.GLFW_KEY_V, "key.categories.webuilder");
     static CompoundTag status = new CompoundTag();
     static final PreviewMesh mesh = new PreviewMesh();
     static final java.util.List<MeasureGuide> locked = new java.util.ArrayList<>();
@@ -54,7 +58,7 @@ public final class ClientController {
             event.registerReloadListener((net.minecraft.server.packs.resources.ResourceManagerReloadListener)
                 manager -> Minecraft.getInstance().execute(mesh::clear));
         }
-        @SubscribeEvent public static void keys(RegisterKeyMappingsEvent e) { e.register(MENU); }
+        @SubscribeEvent public static void keys(RegisterKeyMappingsEvent e) { e.register(MENU); e.register(LAST); e.register(SOUL); }
     }
     @SubscribeEvent public static void tick(TickEvent.ClientTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
@@ -76,8 +80,10 @@ public final class ClientController {
                 }
             }
         }
+        while (SOUL.consumeClick()) if (mc.screen==null) SoulCamera.toggle(mc);
+        while (LAST.consumeClick()) if (!SoulCamera.active() && mc.player!=null && mc.screen==null && mode()==Mode.NONE) Network.action(11,0);
         while (MENU.consumeClick()) {
-            if (mc.player != null && mc.screen == null) mc.setScreen(new ModeScreen());
+            if (!SoulCamera.active() && mc.player != null && mc.screen == null) mc.setScreen(new ModeScreen());
         }
     }
     @SubscribeEvent public static void stackInput(ClientChatEvent event) {
@@ -92,6 +98,7 @@ public final class ClientController {
     }
     @SubscribeEvent public static void guideClick(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickEmpty event) {
         Minecraft mc = Minecraft.getInstance();
+        if (SoulCamera.active()) return;
         if (event.getHand() != net.minecraft.world.InteractionHand.MAIN_HAND || event.getEntity() != mc.player
             || !mc.player.getMainHandItem().isEmpty() || guideHeld
             || !status.getString("phase").isEmpty() || (mode() == Mode.CURVE && mc.player.isShiftKeyDown())) return;
@@ -114,7 +121,15 @@ public final class ClientController {
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void interact(InputEvent.InteractionKeyMappingTriggered e) {
         Minecraft mc = Minecraft.getInstance();
+        if (SoulCamera.active()) { e.setCanceled(true); e.setSwingHand(false); return; }
         if (mc.player == null || mc.screen != null || (!e.isAttack() && !e.isUseItem())) return;
+        if (mode()==Mode.FELL && e.isAttack() && status.getString("phase").isEmpty()) {
+            e.setCanceled(true); e.setSwingHand(false);
+            if (!waitingForRelease && clickCooldown==0) {
+                waitingForRelease=true; Network.action(12,0);
+            }
+            return;
+        }
         boolean finishCurve = mode() == Mode.CURVE && status.getString("phase").isEmpty() && e.isUseItem()
             && mc.player.isShiftKeyDown() && mc.player.getMainHandItem().isEmpty();
         if (!finishCurve && !waitingForRelease && (mode() == Mode.NONE || status.getString("phase").isEmpty())) return;
@@ -213,6 +228,7 @@ public final class ClientController {
     @SubscribeEvent public static void logout(ClientPlayerNetworkEvent.LoggingOut e) {
         try { EffortlessBridge.update(false); } catch (IllegalStateException ignored) { }
         mesh.clear();
+        SoulCamera.close(Minecraft.getInstance());
         locked.clear(); pending = null; guideHeld = false;
         status = new CompoundTag(); clickCooldown = 0; waitingForRelease = false;
     }

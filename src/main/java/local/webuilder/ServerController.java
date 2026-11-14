@@ -34,6 +34,12 @@ public final class ServerController {
     static final Map<UUID, State> STATES = new HashMap<>();
     static final class State {
         Mode mode = Mode.NONE;
+        Mode last = Mode.NONE;
+        boolean lastAir, lastOverwrite, lastGeometryAir;
+        void remember() {
+            last = mode;
+            lastAir = includeAir; lastOverwrite = overwrite; lastGeometryAir = geometryAirOnly;
+        }
         final List<BlockPos> controls = new ArrayList<>();
         BlockPos first, middle;
         boolean overwrite = true;
@@ -61,7 +67,7 @@ public final class ServerController {
             return actor.hasPermission("worldedit.clipboard.copy") && actor.hasPermission("worldedit.clipboard.paste");
         }
         String permission = switch (mode) {
-            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, CLEAR, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> "worldedit.region.set";
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, FELL, CLEAR, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> "worldedit.region.set";
             case REPLACE -> "worldedit.region.replace";
             case COPY -> "worldedit.clipboard.copy";
             case CUT -> "worldedit.clipboard.cut";
@@ -78,6 +84,7 @@ public final class ServerController {
         data.putBoolean("air", s.includeAir);
         data.putBoolean("continuous", s.continuous);
         data.putString("stage", s.first == null ? "放置第一点" : "放置第二点");
+        if (s.mode == Mode.FELL) data.putString("stage","左键选择树干或树叶");
         if (s.mode == Mode.CURVE) data.putString("stage", "已选 " + s.controls.size() + " 点 · 空手潜行右键结束");
         if (s.mode == Mode.PASTE) data.putString("stage", "放置粘贴定位方块");
         data.putBoolean("overwrite", s.overwrite);
@@ -118,6 +125,23 @@ public final class ServerController {
                     s.mode = Mode.values()[value];
                     s.dimension = p.level().dimension().location().toString();
                     status(p, s);
+                }
+                case 11 -> {
+                    if (s.mode != Mode.NONE || s.job != null) return;
+                    if (s.last == Mode.NONE) { message(p,"还没有已完成的模式。"); return; }
+                    if (!allowedMode(p,s.last)) return;
+                    s.includeAir=s.lastAir; s.overwrite=s.lastOverwrite; s.geometryAirOnly=s.lastGeometryAir;
+                    action(p,0,s.last.ordinal());
+                }
+                case 12 -> {
+                    if (s.mode != Mode.FELL || s.job != null || !allowedMode(p,s.mode)) return;
+                    var hit = p.pick(p.getBlockReach(),1,false);
+                    if (hit instanceof BlockHitResult block && hit.getType()==HitResult.Type.BLOCK) {
+                        var pos=block.getBlockPos();
+                        if (!TreeSearch.matches(p.level().getBlockState(pos))) { message(p,"请选择树干或树叶。"); return; }
+                        s.job=new EditJob(p,s,pos,pos,null);
+                        status(p,s);
+                    }
                 }
                 case 9 -> {
                     if (s.job == null) s.overwrite = value == 1;
@@ -185,7 +209,7 @@ public final class ServerController {
     }
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void guardBreak(net.minecraftforge.event.level.BlockEvent.BreakEvent event) {
-        if (event.getPlayer() instanceof ServerPlayer player && hasJob(player)) event.setCanceled(true);
+        if (event.getPlayer() instanceof ServerPlayer player && (hasJob(player) || STATES.containsKey(player.getUUID()) && state(player).mode==Mode.FELL)) event.setCanceled(true);
     }
     private static boolean hasJob(ServerPlayer player) {
         State state = STATES.get(player.getUUID());
@@ -200,7 +224,7 @@ public final class ServerController {
     }
 
     static void recordPlacement(ServerPlayer p, State s, BlockPos pos) throws Exception {
-        if (s.mode == Mode.NONE) return;
+        if (s.mode == Mode.NONE || s.mode == Mode.FELL) return;
         BlockState after = p.level().getBlockState(pos);
         if (after.isAir()) return;
         if (s.mode == Mode.CURVE) {
@@ -229,6 +253,7 @@ public final class ServerController {
             guide.putLong("end", pos.asLong());
             Network.status(p, guide);
             message(p, measurement(s.first, pos));
+            s.remember();
             s.first = null; s.source = null;
             if (!s.continuous) s.mode = Mode.NONE;
         } else {
@@ -311,7 +336,7 @@ public final class ServerController {
         if (s.job != null) {
             try {
                 s.job.tick();
-                if (s.job.finished) { if (!s.continuous) s.mode = Mode.NONE; s.job = null; s.first = null; s.middle = null; s.direction = null; s.source = null; status(p, s); }
+                if (s.job.finished) { s.remember(); if (!s.continuous) s.mode = Mode.NONE; s.job = null; s.first = null; s.middle = null; s.direction = null; s.source = null; status(p, s); }
             } catch (Exception ex) {
                 message(p, "任务失败：" + ex.getMessage());
                 reset(p, s, true);

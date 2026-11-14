@@ -1,10 +1,14 @@
 # 创世神：交互建造 / WorldEdit Builder
 
-版本 0.1.4，目标 Minecraft 1.20.1、Forge 47.4.18、WorldEdit 7.2.15。
+版本 0.1.5-pre1，目标 Minecraft 1.20.1、Forge 47.4.18、WorldEdit 7.2.15。
 
 面向创造模式的 WorldEdit 附属。通过单页菜单、真实放置选点、预览和鼠标确认执行编辑。客户端与服务端均需安装；单人游戏由内置服务端执行。
 
 要求 WorldEdit 选区、对应操作以及 `worldedit.setnbt` 权限；避免无数据权限时本体自动剥离 NBT。
+
+## v0.1.5-pre1
+
+G 重启上次成功的模式及配置，重新选点。伐木模式左键原木或树叶，26 邻接分批搜索，预览后右键清除、左键取消；支持 logs、leaves 和数据包方块标签 webuilder:fellable。V 切换创造自由摄像机，WASD 平移、空格上升、潜行下降、疾跑加速。观察时保留肉身与预览，移动限客户端已加载区块。两项快捷键可在控制设置中修改。
 
 ## v0.1.4
 
@@ -61,7 +65,7 @@ v0.1.4：高级几何体支持实心/空心球、任意平面的填充/边框三
 
 本地依赖 `libs/worldedit-mod-7.2.15.jar` 来自当前游戏实例，仅作为编译及开发运行依赖，不嵌入附属成品。
 
-构建产物位于 `build/libs/worldedit-builder-1.20.1-0.1.4.jar`。安装名称为 `[创世神：交互建造] worldedit-builder-1.20.1-0.1.4.jar`。
+构建产物位于 `build/libs/worldedit-builder-1.20.1-0.1.5-pre1.jar`。安装名称为 `[创世神：交互建造] worldedit-builder-1.20.1-0.1.5-pre1.jar`。
 
 `build` 运行独立回归测试。`gradlew.bat runGameTestServer -x downloadAssets` 在项目的 `run-gametest` 隔离世界中运行真实 Forge/WorldEdit 测试。游戏测试代码和结构位于 `src/gametest`，不打入发布 JAR。
 

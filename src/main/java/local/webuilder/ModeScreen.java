@@ -48,7 +48,7 @@ final class ModeScreen extends Screen {
         mode(3, 0, Mode.CIRCLE); mode(3, 1, Mode.CURVE);
         mode(1, 0, Mode.COPY); mode(1, 1, Mode.CUT); mode(1, 2, Mode.PASTE);
         mode(1, 3, Mode.REPLACE); mode(1, 4, Mode.CLEAR);
-        mode(1, 5, Mode.STACK);
+        mode(1, 5, Mode.STACK); mode(1, 6, Mode.FELL);
         mode(3, 2, Mode.SPHERE); mode(3, 3, Mode.SHELL);
         mode(3, 4, Mode.TRIANGLE); mode(3, 5, Mode.EDGES);
         mode(3, 6, Mode.CYLINDER); mode(3, 7, Mode.WALL); mode(3, 8, Mode.CAPPED);
