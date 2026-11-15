@@ -85,10 +85,11 @@ public final class ClientController {
         if (!status.getBoolean("stackInput")) return;
         event.setCanceled(true);
         try {
-            Network.action(10,Integer.parseInt(event.getMessage().trim()));
+            String text = event.getMessage().trim();
+            Network.action(10, status.getBoolean("axisInput") ? AxisInput.parse(text) : Integer.parseInt(text));
         } catch (NumberFormatException ex) {
             var player=Minecraft.getInstance().player;
-            if (player!=null) player.displayClientMessage(net.minecraft.network.chat.Component.literal("请输入有效整数。"),false);
+            if (player!=null) player.displayClientMessage(net.minecraft.network.chat.Component.literal(status.getBoolean("axisInput") ? AxisInput.PROMPT : "请输入有效的副本数。"),false);
         }
     }
     @SubscribeEvent public static void guideClick(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickEmpty event) {

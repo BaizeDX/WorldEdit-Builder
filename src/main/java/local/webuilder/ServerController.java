@@ -84,7 +84,8 @@ public final class ServerController {
         if (s.middle != null && s.job == null) {
             if (s.mode == Mode.STACK) {
                 data.putBoolean("stackInput", true);
-                data.putString("stage", s.direction == null ? "聊天输入方向 1–6" : "聊天输入新增副本数");
+                data.putBoolean("axisInput", s.direction == null);
+                data.putString("stage", s.direction == null ? AxisInput.PROMPT : "聊天输入新增副本数");
             } else data.putString("stage", s.mode.cylinder() ? "放置高度点" : "放置第三个顶点");
         }
         if (s.job != null) s.job.describe(data);
@@ -129,7 +130,7 @@ public final class ServerController {
                     if (s.direction == null) {
                         var directions = new net.minecraft.core.Direction[]{net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.SOUTH,
                             net.minecraft.core.Direction.WEST, net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.UP, net.minecraft.core.Direction.DOWN};
-                        if (value < 1 || value > 6) { message(p,"请输入方向编号 1–6。"); return; }
+                        if (value < 1 || value > 6) { message(p,AxisInput.PROMPT); return; }
                         s.direction = directions[value-1];
                         message(p,"输入新增副本数（正整数）。");
                     } else {
@@ -216,7 +217,7 @@ public final class ServerController {
         } else if (s.mode == Mode.STACK) {
             if (s.middle != null) return;
             s.middle = pos.immutable();
-            message(p,"聊天输入方向：1北 2南 3西 4东 5上 6下");
+            message(p,AxisInput.PROMPT);
         } else if ((s.mode.triangle() || s.mode.cylinder()) && s.middle == null) {
             if (s.mode.cylinder() && pos.getY()!=s.first.getY()) {
                 message(p,"半径点须与底面圆心同高，请重新放置第二点。"); return;

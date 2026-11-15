@@ -4,6 +4,16 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RegionMathTest {
+    @Test void axisInputUsesExistingDirectionIds() {
+        String[] axes = {"z-", "z+", "x-", "x+", "y+", "y-"};
+        for (int i = 0; i < axes.length; i++) {
+            assertEquals(i + 1, AxisInput.parse(axes[i]));
+            assertEquals(i + 1, AxisInput.parse(Integer.toString(i + 1)));
+        }
+        assertEquals(4, AxisInput.parse(" X+ "));
+        assertThrows(NumberFormatException.class, () -> AxisInput.parse("x"));
+    }
+
     @Test void lineStepsAreConnectedNearestAndMirrorInvariant() {
         for (int steps = 0; steps <= 32; steps++) {
             for (int delta = 0; delta <= steps; delta++) {
