@@ -50,6 +50,25 @@ public final class BuilderGameTests {
         if (!job.finished) throw new AssertionError("Edit did not finish");
     }
     @GameTest(template = "empty", timeoutTicks = 200)
+    public static void clearNearbyDrops(GameTestHelper h) throws Exception {
+        var level = h.getLevel();
+        var player = player(h, "clearitem");
+        var center = net.minecraft.world.phys.Vec3.atCenterOf(h.absolutePos(new BlockPos(2,4,2)));
+        player.setPos(center);
+        player.getInventory().setItem(0,new ItemStack(Items.APPLE, 3));
+        var edge = new net.minecraft.world.entity.item.ItemEntity(level,center.x+1.5,center.y,center.z,new ItemStack(Items.STICK,4));
+        var corner = new net.minecraft.world.entity.item.ItemEntity(level,center.x+1,center.y+1,center.z+1,new ItemStack(Items.STICK));
+        level.addFreshEntity(edge);
+        level.addFreshEntity(corner);
+        var dispatcher=level.getServer().getCommands().getDispatcher();
+        var source=player.createCommandSourceStack().withPermission(2);
+        h.assertTrue(dispatcher.execute("clearitem 1.5",source)==1 && edge.isRemoved() && !corner.isRemoved(),"Sphere boundary");
+        h.assertTrue(dispatcher.execute("webuilder clearitem 1.5",source)==0,"Empty radius result");
+        h.assertTrue(player.getInventory().getItem(0).getCount()==3,"Inventory changed");
+        corner.discard();
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
     public static void geometryConnections(GameTestHelper h) throws Exception {
         var player = player(h, "connections");
         var level = h.getLevel();

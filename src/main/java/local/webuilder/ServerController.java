@@ -5,6 +5,10 @@ import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.LocalSession;
 import com.sk89q.worldedit.forge.ForgeAdapter;
 import net.minecraft.commands.Commands;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
@@ -247,11 +251,26 @@ public final class ServerController {
             e.getDispatcher().register(Commands.literal("grass").requires(source -> source.hasPermission(2))
                 .executes(context -> grass(context.getSource().getPlayerOrException())));
         }
+        if (e.getDispatcher().getRoot().getChild("clearitem") == null)
+            e.getDispatcher().register(clearItemCommand());
         e.getDispatcher().register(Commands.literal("webuilder")
+            .then(clearItemCommand())
             .then(Commands.literal("grass").executes(c -> grass(c.getSource().getPlayerOrException())))
             .then(Commands.literal("cancel").executes(c -> { action(c.getSource().getPlayerOrException(), 2, 0); return 1; }))
             .then(Commands.literal("air").then(Commands.argument("enabled", BoolArgumentType.bool())
                 .executes(c -> { action(c.getSource().getPlayerOrException(), 3, BoolArgumentType.getBool(c, "enabled") ? 1 : 0); return 1; }))));
+    }
+    private static LiteralArgumentBuilder<CommandSourceStack> clearItemCommand() {
+        return Commands.literal("clearitem").requires(source -> source.hasPermission(2))
+            .then(Commands.argument("radius", DoubleArgumentType.doubleArg(0)).executes(ctx -> {
+                ServerPlayer player = ctx.getSource().getPlayerOrException();
+                double radius = DoubleArgumentType.getDouble(ctx, "radius");
+                var items = player.serverLevel().getEntities(EntityType.ITEM,
+                    item -> item.isAlive() && item.distanceToSqr(player) <= radius * radius);
+                for (var item : items) item.discard();
+                ctx.getSource().sendSuccess(() -> Component.literal("已清理 " + items.size() + " 组掉落物。"), false);
+                return items.size();
+            }));
     }
     static int grass(ServerPlayer p) {
         if (!allowed(p) || !allowedMode(p, Mode.SOLID)) { message(p, "需要创造模式与 WorldEdit 放置权限。"); return 0; }
