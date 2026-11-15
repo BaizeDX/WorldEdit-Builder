@@ -2,6 +2,7 @@ package local.webuilder;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -133,14 +134,27 @@ public final class ClientController {
 
         }
     }
-    @SubscribeEvent public static void hud(RenderGuiEvent.Post e) {
+    @SubscribeEvent public static void hud(RenderGuiEvent.Post event) {
+        if (Minecraft.getInstance().screen == null) drawModeHint(event.getGuiGraphics());
+    }
+    @SubscribeEvent public static void chatHint(ScreenEvent.Render.Post event) {
+        if (event.getScreen() instanceof net.minecraft.client.gui.screens.ChatScreen)
+            drawModeHint(event.getGuiGraphics());
+    }
+    private static void drawModeHint(GuiGraphics graphics) {
         Minecraft mc = Minecraft.getInstance();
         if (mode() == Mode.NONE || mc.player == null || mc.options.hideGui) return;
         String text = mode().label + " · " + status.getString("stage");
-        int x = (mc.getWindow().getGuiScaledWidth() - mc.font.width(text)) / 2;
-        int y = mc.getWindow().getGuiScaledHeight() - 64;
-        e.getGuiGraphics().fill(x - 4, y - 3, x + mc.font.width(text) + 4, y + 11, 0x99000000);
-        e.getGuiGraphics().drawString(mc.font, text, x, y, 0xFFE6A3, true);
+        int width = mc.getWindow().getGuiScaledWidth();
+        int height = mc.getWindow().getGuiScaledHeight();
+        int textWidth = mc.font.width(text);
+        int x = (width - textWidth) / 2;
+        int y = height - 64;
+        // Keep the normal hotbar position if the chat column ends before the hint.
+        // The narrow strip below the chat history also clears the input and hotbar.
+        if (x - 4 <= mc.gui.getChat().getWidth() + 12) y = height - 36;
+        graphics.fill(x - 4, y - 2, x + textWidth + 4, y + mc.font.lineHeight + 1, 0xCE000000);
+        graphics.drawString(mc.font, text, x, y, 0xFFE6A3, true);
     }
     @SubscribeEvent public static void render(RenderLevelStageEvent e) {
         if (e.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
