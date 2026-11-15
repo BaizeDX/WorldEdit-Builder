@@ -196,7 +196,8 @@ public final class ClientController {
         buffers.endBatch(RenderType.lines());
     }
     @SubscribeEvent public static void renderGuides(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
+        // Forge 47.4.18 passes the world view pose here, including camera rotation.
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_WEATHER) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || (pending == null && locked.isEmpty())) return;
         String dimension = mc.level.dimension().location().toString();
