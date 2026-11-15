@@ -166,13 +166,6 @@ public final class ClientController {
         PoseStack pose = e.getPoseStack();
         var camera = e.getCamera().getPosition();
         var buffers = mc.renderBuffers().bufferSource();
-        String dim = mc.level.dimension().location().toString();
-        boolean visible = pending != null && pending.dimension().equals(dim);
-        if (visible) drawGuide(pending, pose, camera, buffers);
-        for (MeasureGuide guide : locked) {
-            if (guide.dimension().equals(dim)) { drawGuide(guide, pose, camera, buffers); visible = true; }
-        }
-        if (visible) buffers.endBatch(RenderType.lines());
         if (!status.getString("phase").equals("READY") || mode() == Mode.NONE) return;
         mesh.draw(status, pose, camera);
         pose.pushPose();
@@ -197,11 +190,25 @@ public final class ClientController {
 
         buffers.endBatch(RenderType.lines());
     }
+    @SubscribeEvent public static void renderGuides(RenderLevelStageEvent event) {
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || (pending == null && locked.isEmpty())) return;
+        String dimension = mc.level.dimension().location().toString();
+        var pose = event.getPoseStack();
+        var camera = event.getCamera().getPosition();
+        var buffers = mc.renderBuffers().bufferSource();
+        if (pending != null && pending.dimension().equals(dimension)) drawGuide(pending, pose, camera, buffers);
+        for (MeasureGuide guide : locked) {
+            if (guide.dimension().equals(dimension)) drawGuide(guide, pose, camera, buffers);
+        }
+        buffers.endBatch(GuideLines.TYPE);
+    }
     private static void drawGuide(MeasureGuide guide, PoseStack pose, net.minecraft.world.phys.Vec3 camera,
                                   net.minecraft.client.renderer.MultiBufferSource.BufferSource buffers) {
             var start = net.minecraft.world.phys.Vec3.atCenterOf(guide.a());
             var end = net.minecraft.world.phys.Vec3.atCenterOf(guide.b());
-            var lines = buffers.getBuffer(RenderType.lines());
+            var lines = buffers.getBuffer(GuideLines.TYPE);
             pose.pushPose();
             pose.translate(start.x - camera.x, start.y - camera.y, start.z - camera.z);
             var delta = end.subtract(start);
