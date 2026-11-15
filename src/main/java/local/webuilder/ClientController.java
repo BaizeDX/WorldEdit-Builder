@@ -30,12 +30,17 @@ public final class ClientController {
     static final PreviewMesh mesh = new PreviewMesh();
     static final java.util.List<MeasureGuide> locked = new java.util.ArrayList<>();
     static MeasureGuide pending;
+    private static boolean traceGuide;
+    private static final net.minecraft.client.renderer.MultiBufferSource.BufferSource guideBuffer =
+        net.minecraft.client.renderer.MultiBufferSource.immediate(new com.mojang.blaze3d.vertex.BufferBuilder(4096));
     static boolean guideHeld;
     static int clickCooldown;
     static boolean waitingForRelease;
     public static void receive(CompoundTag data) {
         CompoundTag next = data == null ? new CompoundTag() : data;
         if (next.contains("guideDimension")) {
+            traceGuide = true;
+            BuilderMod.LOG.info("Measurement received: {} -> {} in {}", BlockPos.of(next.getLong("start")), BlockPos.of(next.getLong("end")), next.getString("guideDimension"));
             pending = new MeasureGuide(next.getString("guideDimension"), BlockPos.of(next.getLong("start")), BlockPos.of(next.getLong("end")));
             return;
         }
@@ -197,12 +202,17 @@ public final class ClientController {
         String dimension = mc.level.dimension().location().toString();
         var pose = event.getPoseStack();
         var camera = event.getCamera().getPosition();
-        var buffers = mc.renderBuffers().bufferSource();
+        var buffers = guideBuffer;
         if (pending != null && pending.dimension().equals(dimension)) drawGuide(pending, pose, camera, buffers);
         for (MeasureGuide guide : locked) {
             if (guide.dimension().equals(dimension)) drawGuide(guide, pose, camera, buffers);
         }
         buffers.endBatch(GuideLines.TYPE);
+        if (traceGuide) {
+            traceGuide = false;
+            BuilderMod.LOG.info("Measurement render pass: dimension={}, pendingDimension={}, locked={}, camera={}",
+                dimension, pending == null ? null : pending.dimension(), locked.size(), camera);
+        }
     }
     private static void drawGuide(MeasureGuide guide, PoseStack pose, net.minecraft.world.phys.Vec3 camera,
                                   net.minecraft.client.renderer.MultiBufferSource.BufferSource buffers) {

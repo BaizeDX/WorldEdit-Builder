@@ -8,6 +8,7 @@ import net.minecraftforge.fml.config.ModConfig;
 
 @Mod(BuilderMod.ID)
 public final class BuilderMod {
+    static final org.slf4j.Logger LOG = com.mojang.logging.LogUtils.getLogger();
     public static final String ID = "webuilder";
     public static final ForgeConfigSpec SPEC;
     public static final ForgeConfigSpec.IntValue HISTORY_BLOCKS;

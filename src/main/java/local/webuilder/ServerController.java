@@ -232,6 +232,7 @@ public final class ServerController {
             guide.putString("guideDimension", p.level().dimension().location().toString());
             guide.putLong("start", s.first.asLong());
             guide.putLong("end", pos.asLong());
+            BuilderMod.LOG.info("Measurement sent: {} -> {} in {}", s.first, pos, guide.getString("guideDimension"));
             Network.status(p, guide);
             message(p, measurement(s.first, pos));
             s.first = null; s.source = null;
