@@ -69,6 +69,39 @@ public final class BuilderGameTests {
         h.succeed();
     }
     @GameTest(template = "empty", timeoutTicks = 200)
+    public static void diagonalTreeAndLast(GameTestHelper h) throws Exception {
+        var player=player(h,"tree");
+        var level=h.getLevel();
+        var state=ServerController.state(player);
+        var root=h.absolutePos(new BlockPos(1,3,1));
+        var bridge=root.offset(1,1,1);
+        var tip=bridge.offset(1,1,1);
+        try {
+            ServerController.action(player,0,Mode.FELL.ordinal());
+            level.setBlock(root,Blocks.OAK_LOG.defaultBlockState(),2);
+            level.setBlock(bridge,Blocks.OAK_LEAVES.defaultBlockState(),2);
+            level.setBlock(tip,Blocks.BIRCH_LOG.defaultBlockState(),2);
+            var job=new EditJob(player,state,root,root,null);
+            state.job=job;
+            ready(job);
+            h.assertTrue(job.planned==3 && level.getBlockState(root).is(Blocks.OAK_LOG),"Tree preview");
+            level.setBlock(bridge,Blocks.AIR.defaultBlockState(),2);
+            job.confirm();
+            ready(job);
+            h.assertTrue(job.planned==1,"Disconnected trunk retained in plan");
+            execute(job);
+            ServerController.tickPlayer(player,state);
+            h.assertTrue(state.mode==Mode.NONE && level.getBlockState(root).isAir() && level.getBlockState(tip).is(Blocks.BIRCH_LOG),"Felling");
+            ServerController.session(player).undo(null,ForgeAdapter.adaptPlayer(player));
+            h.assertTrue(level.getBlockState(root).is(Blocks.OAK_LOG),"Tree undo");
+            ServerController.action(player,0,Mode.SOLID.ordinal());
+            ServerController.action(player,0,Mode.NONE.ordinal());
+            ServerController.action(player,11,0);
+            h.assertTrue(state.mode==Mode.FELL && state.job==null && state.first==null,"Last mode");
+        } finally { ServerController.reset(player,state,false); ServerController.STATES.remove(player.getUUID()); }
+        h.succeed();
+    }
+    @GameTest(template = "empty", timeoutTicks = 200)
     public static void geometryConnections(GameTestHelper h) throws Exception {
         var player = player(h, "connections");
         var level = h.getLevel();

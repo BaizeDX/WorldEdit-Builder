@@ -109,6 +109,7 @@ final class ModeScreen extends Screen {
         mode(1, 0, Mode.COPY); mode(1, 1, Mode.CUT); mode(1, 2, Mode.PASTE);
         mode(1, 3, Mode.REPLACE); mode(1, 4, Mode.CLEAR);
         mode(1, 5, Mode.STACK);
+        mode(1, 6, Mode.FELL);
         mode(2, 0, Mode.NONE);
         overwrite = button(2, 4, "", b -> Network.action(9, ClientController.status.getBoolean("overwrite") ? 0 : 1));
         continuous = button(2, 1, "", b -> Network.action(6, ClientController.status.getBoolean("continuous") ? 0 : 1));

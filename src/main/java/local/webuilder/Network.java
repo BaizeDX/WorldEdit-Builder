@@ -15,7 +15,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 public final class Network {
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
-        new ResourceLocation(BuilderMod.ID, "main"), () -> "9", "9"::equals, "9"::equals);
+        new ResourceLocation(BuilderMod.ID, "main"), () -> "10", "10"::equals, "10"::equals);
     public record Action(int action, int value) {
         static Action read(FriendlyByteBuf b) { return new Action(b.readVarInt(), b.readVarInt()); }
         void write(FriendlyByteBuf b) { b.writeVarInt(action); b.writeVarInt(value); }

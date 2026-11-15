@@ -43,6 +43,8 @@ final class EditJob {
     final BlockState material;
     long volume;
     final CurvePath curve;
+    TreeSearch tree, searching;
+    boolean warnedTree;
     final int width;
     final int depth;
     final boolean includeAir;
@@ -108,6 +110,7 @@ final class EditJob {
         this.curve = mode == Mode.CURVE ? new CurvePath(owner.controls) : null;
         this.origin = first.immutable();
         this.end = second.immutable();
+        if (mode == Mode.FELL) searching = new TreeSearch(origin,level);
         this.material = material;
         this.includeAir = owner.includeAir;
         this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode.advancedShape() || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE);
@@ -190,6 +193,7 @@ final class EditJob {
     void approveWarning() {
         if (phase != Phase.WARNING) return;
         allocateClipboard();
+        if (mode == Mode.FELL) warnedTree = true;
         phase = Phase.PREPARE;
         ServerController.status(player, owner);
     }
@@ -197,6 +201,7 @@ final class EditJob {
         if (phase != Phase.READY) return;
         if (ServerController.busy()) { ServerController.message(player, "另一个任务执行中，请稍后确认。"); return; }
         phase = Phase.VALIDATE;
+        if (mode == Mode.FELL) searching = new TreeSearch(origin,level);
         cursor = 0;
         comparedEntries = 0; differenceCount = 0; differences.clear();
         clipboardBytes = 0;
@@ -204,6 +209,7 @@ final class EditJob {
     }
     boolean isWriting() { return phase == Phase.APPLY || phase == Phase.CONNECTIONS || phase == Phase.HISTORY || phase == Phase.VALIDATE; }
     BlockPos position(long index) {
+        if (tree != null) return BlockPos.of(tree.position((int)index));
         if (curve != null) return BlockPos.of(curve.cells.getLong((int) index));
         if (circle != null) return circle.position(origin, index);
         if (mode == Mode.LINE) {
@@ -221,6 +227,7 @@ final class EditJob {
         return p.getX() >= min.getX() && p.getX() <= max.getX() && p.getY() >= min.getY() && p.getY() <= max.getY() && p.getZ() >= min.getZ() && p.getZ() <= max.getZ();
     }
     boolean geometric(BlockPos p) {
+        if (tree != null) return tree.visited.contains(p.asLong());
         if (shape != null) return shape.includes(p);
         if (curve != null) return curve.visited.contains(p.asLong());
         if (circle != null) return p.getY() == origin.getY() && circle.contains(p.getX() - origin.getX(), p.getZ() - origin.getZ());
@@ -236,7 +243,7 @@ final class EditJob {
         if (!geometric(pos) || skipMaterial(existing.state)) return null;
         return switch (mode) {
             case COPY -> null;
-            case CUT, CLEAR -> new Snapshot(Blocks.AIR.defaultBlockState(), null);
+            case CUT, CLEAR, FELL -> new Snapshot(Blocks.AIR.defaultBlockState(), null);
             case STACK -> {
                 BlockPos source = new BlockPos(sourceCoordinate(pos.getX(), origin.getX(), end.getX()),
                     sourceCoordinate(pos.getY(), origin.getY(), end.getY()), sourceCoordinate(pos.getZ(), origin.getZ(), end.getZ()));
@@ -261,6 +268,7 @@ final class EditJob {
         return low + Math.floorMod(position-low,Math.abs(a-b)+1);
     }
     boolean skipMaterial(BlockState state) {
+        if (mode==Mode.FELL && !TreeSearch.matches(state)) return true;
         if (protectTarget && (!state.isAir() || !state.getFluidState().isEmpty())) return true;
         return usesMaterial() && (state.equals(material) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
     }
@@ -357,6 +365,31 @@ final class EditJob {
         if (finished || phase == Phase.WARNING || phase == Phase.READY) return;
         long deadline = System.nanoTime() + 3_000_000;
         int remaining = BuilderMod.BATCH.get();
+        if (searching != null) {
+            while (searching.head < searching.cells.size() && remaining-- > 0 && System.nanoTime() < deadline) {
+                searching.expand(level);
+                int count=searching.cells.size();
+                if (count > BuilderMod.MAX_SCAN.get() || freeHeap()<192L*1024*1024+32L*count)
+                    throw new IllegalArgumentException("伐木搜索超过容量。");
+                if (!warnedTree && count > BuilderMod.HISTORY_BLOCKS.get()) {
+                    volume=count; noHistory=true; phase=Phase.WARNING;
+                    closePlan(); before.clear(); preview.clear(); planned=0; snapshotBytes=0; cursor=0;
+                    ServerController.message(player,"连通范围已超过撤销上限，搜索暂停。按 ~ 查看警告。");
+                    ServerController.status(player,owner); return;
+                }
+            }
+            if (searching.head < searching.cells.size()) return;
+            if (searching.cells.isEmpty()) throw new IllegalArgumentException("起点已改变，请重新选树。");
+            if (phase==Phase.VALIDATE && tree.visited.equals(searching.visited)) searching=null;
+            else {
+                if (phase==Phase.VALIDATE) ServerController.message(player,"树木连接已变化，请重新确认。");
+                tree=searching; searching=null; min=tree.min; max=tree.max; volume=tree.cells.size();
+                closePlan(); before.clear(); preview.clear(); planned=0; snapshotBytes=0; cursor=0;
+                phase=Phase.PREPARE;
+                ServerController.status(player,owner);
+            }
+            return;
+        }
         if (curve != null && !curve.complete) {
             // Reserve room for primitive array growth during rehashing.
             if (freeHeap() < 192L * 1024 * 1024 + 32L * curve.cells.size())
@@ -475,6 +508,7 @@ final class EditJob {
                 if (planOutput != null) { planOutput.close(); planOutput = null; }
                 phase = Phase.READY;
                 String ready = mode == Mode.COPY ? "复制范围就绪，" + volume + " 格。" : "选区就绪，预计修改 " + planned + " 格。";
+                if (tree != null && tree.truncated) ready += "搜索在未加载区块或世界边界截断。";
                 if (truncatedParts > 0) ready += "含截断结构。";
                 if (mode != Mode.COPY && planned > preview.size()) ready += "预览已简化。";
                 if (noHistory) ready += "无法撤销，执行前清空全部共享历史。";
@@ -605,7 +639,7 @@ final class EditJob {
     void describe(CompoundTag data) {
         data.putString("stage", switch (phase) {
             case WARNING -> "大范围警告：按 ~ 查看并确认";
-            case PREPARE -> curve != null && !curve.complete ? "生成曲线路径" : "准备预览 " + cursor * 100 / volume + "%";
+            case PREPARE -> searching != null ? "搜索相连树木" : curve != null && !curve.complete ? "生成曲线路径" : "准备预览 " + cursor * 100 / volume + "%";
             case READY -> "右键确认 / 左键取消";
             case VALIDATE -> "重新检查 " + cursor * 100 / volume + "%";
             case APPLY -> "执行 " + appliedEntries * 100 / Math.max(1, planned) + "%（左键中止）";
