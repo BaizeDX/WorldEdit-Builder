@@ -11,7 +11,12 @@ final class ModeScreen extends Screen {
     private enum Page { MAIN, GEOMETRY, SPHERE, TRIANGLE, CYLINDER }
     private Page page = Page.MAIN;
     private static Mode sphere = Mode.SPHERE, triangle = Mode.TRIANGLE, cylinder = Mode.CYLINDER;
-    private Button air, continuous, geometryAir, overwrite;
+    private Button air, continuous, geometryAir, overwrite, nightVision;
+    private static final Component NIGHT_ON = Component.literal("夜视：开");
+    private static final Component NIGHT_OFF = Component.literal("夜视：关");
+    private boolean hasNightVision() {
+        return minecraft.player != null && minecraft.player.hasEffect(net.minecraft.world.effect.MobEffects.NIGHT_VISION);
+    }
     private int top() { return Math.max(5, (height - 205) / 2); }
     private int colWidth() { return Math.min(130, (width - 20) / 3); }
     private int left(int col) { return (width - colWidth() * 3) / 2 + col * colWidth(); }
@@ -111,6 +116,12 @@ final class ModeScreen extends Screen {
         mode(1, 5, Mode.STACK);
         mode(1, 6, Mode.FELL);
         mode(2, 0, Mode.NONE);
+        nightVision = button(2, 5, "夜视", b -> {
+            if (minecraft.player == null) return;
+            minecraft.player.connection.sendCommand(hasNightVision()
+                ? "effect clear @s minecraft:night_vision"
+                : "effect give @s minecraft:night_vision infinite 0 true");
+        });
         overwrite = button(2, 4, "", b -> Network.action(9, ClientController.status.getBoolean("overwrite") ? 0 : 1));
         continuous = button(2, 1, "", b -> Network.action(6, ClientController.status.getBoolean("continuous") ? 0 : 1));
         air = button(2, 2, "", b -> Network.action(3, ClientController.status.getBoolean("air") ? 0 : 1));
@@ -118,6 +129,7 @@ final class ModeScreen extends Screen {
         syncOptions();
     }
     @Override public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (page == Page.MAIN && nightVision != null) nightVision.setMessage(hasNightVision() ? NIGHT_ON : NIGHT_OFF);
         renderBackground(graphics);
         if (ClientController.status.getString("phase").equals("WARNING")) {
             graphics.drawCenteredString(font, "大范围操作确认", width / 2, height / 2 - 72, 0xFFCC66);

@@ -41,6 +41,7 @@ final class EditJob {
     final AdvancedShape shape;
     final boolean protectTarget;
     final BlockState material;
+    final Snapshot buildingMaterial;
     long volume;
     final CurvePath curve;
     TreeSearch tree, searching;
@@ -112,6 +113,7 @@ final class EditJob {
         this.end = second.immutable();
         if (mode == Mode.FELL) searching = new TreeSearch(origin,level);
         this.material = material;
+        this.buildingMaterial = sampleBuildingMaterial(second, material);
         this.includeAir = owner.includeAir;
         this.geometryAirOnly = owner.geometryAirOnly && (mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode.advancedShape() || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE);
         this.protectTarget = !owner.overwrite && (mode == Mode.PASTE || mode == Mode.STACK);
@@ -258,8 +260,8 @@ final class EditJob {
                 if (!includeAir && block.state.isAir()) yield null;
                 yield block;
             }
-            case REPLACE -> existing.state.equals(owner.source) ? new Snapshot(material, null) : null;
-            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> new Snapshot(material, null);
+            case REPLACE -> existing.state.equals(owner.source) ? materialFor(existing) : null;
+            case SOLID, HOLLOW, FRAME, LINE, CIRCLE, CURVE, SPHERE, SHELL, TRIANGLE, EDGES, CYLINDER, WALL, CAPPED -> materialFor(existing);
             default -> null;
         };
     }
@@ -267,10 +269,42 @@ final class EditJob {
         int low = Math.min(a,b);
         return low + Math.floorMod(position-low,Math.abs(a-b)+1);
     }
+    private Snapshot sampleBuildingMaterial(BlockPos sample, BlockState state) {
+        if (state != null && usesMaterial() && level.getBlockState(sample).is(state.getBlock())) {
+            var key = net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(state.getBlock());
+            if (key != null && (key.getNamespace().equals("copycats") ||
+                key.getNamespace().equals("create") && key.getPath().startsWith("copycat_"))) {
+                BlockEntity entity = level.getBlockEntity(sample);
+                if (entity != null) {
+                    CompoundTag source = entity.saveWithFullMetadata();
+                    if (source.contains("Material", Tag.TAG_COMPOUND) || source.contains("material_data", Tag.TAG_COMPOUND)) {
+                        CompoundTag skin = new CompoundTag();
+                        for (String field : new String[]{"id", "Material", "Item", "EnableCT", "material_data"})
+                            if (source.contains(field)) skin.put(field, source.get(field).copy());
+                        return new Snapshot(state, skin);
+                    }
+                }
+            }
+        }
+        return new Snapshot(state, null);
+    }
+    private static final java.util.List<String> SKIN_FIELDS = java.util.List.of("Material", "Item", "EnableCT", "material_data");
+
+    private Snapshot materialFor(Snapshot existing) {
+        if (buildingMaterial.nbt == null || existing.nbt == null || !existing.state.is(material.getBlock())) return buildingMaterial;
+        CompoundTag merged = existing.nbt.copy();
+        for (String field : SKIN_FIELDS) {
+            Tag value = buildingMaterial.nbt.get(field);
+            if (value == null) merged.remove(field);
+            else merged.put(field, value.copy());
+        }
+        return new Snapshot(material, merged);
+    }
+
     boolean skipMaterial(BlockState state) {
         if (mode==Mode.FELL && !TreeSearch.matches(state)) return true;
         if (protectTarget && (!state.isAir() || !state.getFluidState().isEmpty())) return true;
-        return usesMaterial() && (state.equals(material) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
+        return usesMaterial() && ((state.equals(material) && buildingMaterial.nbt == null) || geometryAirOnly && (!state.isAir() || !state.getFluidState().isEmpty()));
     }
     boolean usesMaterial() { return mode == Mode.SOLID || mode == Mode.HOLLOW || mode == Mode.FRAME || mode.advancedShape() || mode == Mode.CURVE || mode == Mode.CIRCLE || mode == Mode.LINE || mode == Mode.REPLACE; }
     static boolean isMulti(BlockState state) { return state.getBlock() instanceof BedBlock || state.getBlock() instanceof DoorBlock || state.getBlock() instanceof DoublePlantBlock; }
@@ -434,7 +468,17 @@ final class EditJob {
                 // 7.2.15 BlockOptimizedHistory ignores ArrayListHistory.setRecordChanges(false)
                 // for block changes. The native stage API skips automatic history entirely.
                 // Masks are refused and the change limit is checked against the frozen plan.
-                if (edit.setBlock(ForgeAdapter.adapt(pos), next.toWorldEdit(), EditSession.Stage.BEFORE_REORDER)) changed++;
+                if (buildingMaterial.nbt != null && state.equals(level.getBlockState(pos)) && level.getBlockEntity(pos) != null) {
+                    Snapshot current = Snapshot.read(level, pos);
+                    Snapshot updated = materialFor(current);
+                    if (!Objects.equals(current.nbt, updated.nbt)) {
+                        BlockEntity entity = level.getBlockEntity(pos);
+                        entity.load(updated.nbt.copy());
+                        entity.setChanged();
+                        level.sendBlockUpdated(pos, state, state, Block.UPDATE_CLIENTS);
+                        changed++;
+                    }
+                } else if (edit.setBlock(ForgeAdapter.adapt(pos), next.toWorldEdit(), EditSession.Stage.BEFORE_REORDER)) changed++;
                 appliedEntries++;
             }
             if (freeHeap() < 128L * 1024 * 1024) throw new IllegalStateException("内存余量不足，已中止执行。");

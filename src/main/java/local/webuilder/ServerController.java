@@ -5,6 +5,8 @@ import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.LocalSession;
 import com.sk89q.worldedit.forge.ForgeAdapter;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.world.entity.player.Player;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.commands.CommandSourceStack;
@@ -62,8 +64,13 @@ public final class ServerController {
         return WorldEdit.getInstance().getSessionManager().get(ForgeAdapter.adaptPlayer(p));
     }
     static boolean allowed(ServerPlayer p) {
+        if (buildingDisabled(p)) return false;
         var actor = ForgeAdapter.adaptPlayer(p);
         return p.isCreative() && actor.hasPermission("worldedit.selection.pos") && actor.hasPermission("worldedit.setnbt");
+    }
+    private static final String DISABLED_KEY = "webuilder:building_disabled";
+    private static boolean buildingDisabled(ServerPlayer player) {
+        return player.getPersistentData().getCompound(Player.PERSISTED_NBT_TAG).getBoolean(DISABLED_KEY);
     }
     static boolean allowedMode(ServerPlayer p, Mode mode) {
         if (mode == Mode.STACK) {
@@ -118,7 +125,7 @@ public final class ServerController {
             reset(p, s, true);
             s.mode = Mode.NONE;
             status(p, s);
-            message(p, "需要创造模式、WorldEdit 选区和方块数据权限（worldedit.setnbt），以免内容数据被本体过滤。");
+            message(p, buildingDisabled(p) ? "管理员已停用你的交互建造权限。" : "需要创造模式、WorldEdit 选区和方块数据权限（worldedit.setnbt），以免内容数据被本体过滤。");
             return;
         }
         try {
@@ -273,6 +280,27 @@ public final class ServerController {
     }
     @SubscribeEvent
     public static void commands(RegisterCommandsEvent e) {
+        e.getDispatcher().register(Commands.literal("webuilder").then(Commands.literal("access")
+            .requires(source -> source.hasPermission(3))
+            .then(Commands.argument("player", EntityArgument.player())
+                .then(Commands.argument("enabled", BoolArgumentType.bool()).executes(ctx -> {
+                    ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+                    boolean enabled = BoolArgumentType.getBool(ctx, "enabled");
+                    CompoundTag data = target.getPersistentData();
+                    CompoundTag persisted = data.getCompound(Player.PERSISTED_NBT_TAG);
+                    if (enabled) persisted.remove(DISABLED_KEY);
+                    else persisted.putBoolean(DISABLED_KEY, true);
+                    data.put(Player.PERSISTED_NBT_TAG, persisted);
+                    State current = STATES.get(target.getUUID());
+                    if (!enabled && current != null) {
+                        current.mode = Mode.NONE;
+                        reset(target, current, true);
+                    }
+                    String result = enabled ? "启用" : "停用";
+                    message(target, "管理员已" + result + "你的交互建造权限。");
+                    ctx.getSource().sendSuccess(() -> Component.literal("已" + result + " " + target.getScoreboardName() + " 的交互建造权限。"), true);
+                    return 1;
+                })))));
         if (e.getDispatcher().getRoot().getChild("grass") == null) {
             e.getDispatcher().register(Commands.literal("grass").requires(source -> source.hasPermission(2))
                 .executes(context -> grass(context.getSource().getPlayerOrException())));

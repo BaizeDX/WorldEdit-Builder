@@ -166,9 +166,12 @@ public final class ClientController {
         int textWidth = mc.font.width(text);
         int x = (width - textWidth) / 2;
         int y = height - 64;
-        // Keep the normal hotbar position if the chat column ends before the hint.
-        // The narrow strip below the chat history also clears the input and hotbar.
-        if (x - 4 <= mc.gui.getChat().getWidth() + 12) y = height - 36;
+        int chatRight = mc.gui.getChat().getWidth() + 12;
+        if (x - 4 <= chatRight) {
+            int besideChat = chatRight + 6;
+            if (besideChat + textWidth + 4 <= width) x = besideChat;
+            else y = 6;
+        }
         graphics.fill(x - 4, y - 2, x + textWidth + 4, y + mc.font.lineHeight + 1, 0xCE000000);
         graphics.drawString(mc.font, text, x, y, 0xFFE6A3, true);
     }

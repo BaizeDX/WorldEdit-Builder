@@ -1,7 +1,7 @@
 plugins {
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
 }
-version = '0.1.5-pre1'
+version = '0.1.5'
 group = 'local.webuilder'
 base { archivesName = 'worldedit-builder-1.20.1' }
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
@@ -44,4 +44,7 @@ tasks.withType(JavaCompile).configureEach {
     options.release = 17
 }
 jar.finalizedBy('reobfJar')
-jar { from('LICENSE.txt') }
+jar {
+    from('LICENSE.txt')
+    manifest.attributes('MixinConfigs': 'webuilder.client.mixins.json')
+}
